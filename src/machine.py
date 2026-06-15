@@ -85,11 +85,12 @@ class ControlUnit:
     Моделирует устройство управления (Hardwired).
     Каждый 'yield' представляет собой один такт (фронт синхросигнала).
     """
-    def __init__(self, dp: DataPath):
+    def __init__(self, dp: DataPath, output=sys.stdout):
         self.dp = dp
         self.tick_count = 0
         self.halted = False
         self._fsm = self._microcode_fsm()
+        self.output = output
         
     def tick(self):
         """Продвигает процессор ровно на 1 такт."""
@@ -201,13 +202,6 @@ class ControlUnit:
                 elif opcode == Opcode.BLT and self.dp.sr_n == 1: take_branch = True
                 
                 if take_branch:
-                    # >>> ДОБАВЛЕНО: Распознавание программного HALT (JMP на собственный адрес) <<<
-                    # self.dp.pc уже был инкрементирован на этапе IF, поэтому адрес текущей инструкции = self.dp.pc - 1
-                    if opcode == Opcode.JMP and addr25 == (self.dp.pc - 1):
-                        self.halted = True
-                        yield "HALT"
-                        return  # Это вызовет StopIteration и корректно завершит цикл в tick()
-                    
                     self.dp.pc = addr25
                 yield "EX1"
 
@@ -269,6 +263,11 @@ class ControlUnit:
                 self.dp.sr_ie = 0
                 yield "EX1"
 
+            elif opcode == Opcode.HLT:
+                self.halted = True
+                yield "HALT"
+                return
+
             elif opcode == Opcode.IRET:
                 self.dp.rp += 1
                 self.dp.ar = self.dp.rp
@@ -289,7 +288,7 @@ class ControlUnit:
                    f"PC: {self.dp.pc:04X} | IR: {self.dp.ir:08X} | "
                    f"SP: {self.dp.sp:04X} | RP: {self.dp.rp:04X} | "
                    f"AR: {self.dp.ar:04X} | {flags} | {r_str}")
-        print(log_str)
+        print(log_str, file=self.output)
 
 
 def load_binary(filename: str) -> list:
@@ -306,7 +305,7 @@ def load_binary(filename: str) -> list:
     return memory
 
 
-def run_simulation(imem_file: str, dmem_file: str, schedule: list):
+def run_simulation(imem_file: str, dmem_file: str, schedule: list, trace_file: str = None):
     """Точка входа для запуска эмулятора."""
     imem = load_binary(imem_file)
     dmem = load_binary(dmem_file)
@@ -321,13 +320,22 @@ def run_simulation(imem_file: str, dmem_file: str, schedule: list):
     dp.imem = imem
     dp.dmem = dmem
     
-    cu = ControlUnit(dp)
+    log_output = open(trace_file, 'w', encoding='utf-8') if trace_file else sys.stdout
     
-    print("=== ЗАПУСК СИМУЛЯЦИИ ===")
-    limit = 100000 # Защита от бесконечного цикла
-    while not cu.halted and cu.tick_count < limit:
-        cu.tick()
+    try:
+        cu = ControlUnit(dp, log_output)
+        print("=== ЗАПУСК СИМУЛЯЦИИ ===", file=log_output)
+        limit = 10000  # Защита от бесконечного цикла
         
+        while not cu.halted and cu.tick_count < limit:
+            # Изменяем ку ку.tick так, чтобы она логировала в выбранный поток log_output
+            cu.tick()
+    finally:
+        # Важно закрыть файл, если мы его создавали, чтобы данные сбросились на диск
+        if trace_file:
+            log_output.close()
+            print(f"[+] Трассировка успешно сохранена в файл: {trace_file}")
+
     print("\n=== РЕЗУЛЬТАТЫ ===")
     print(f"Выполнено тактов: {cu.tick_count}")
     print(f"Вывод: {''.join(dp.out_buffer)}")

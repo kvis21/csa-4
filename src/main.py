@@ -74,16 +74,20 @@ def cmd_translate(args):
 
 
 def cmd_run(args):
-    # Если передали файл расписания (-i tokens.txt), парсим его
+    """Логика запуска симулятора."""
     schedule = []
     if args.input:
-        with open(args.input, 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) == 2:
-                    schedule.append((int(parts[0]), parts[1]))
-                    
-    run_simulation(args.imem_name, args.dmem_name, schedule)
+        try:
+            with open(args.input, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) == 2:
+                        schedule.append((int(parts[0]), parts[1]))
+        except FileNotFoundError:
+            print(f"[-] Файл ввода {args.input} не найден.")
+            
+    # Передаем новый аргумент args.trace в функцию симуляции
+    run_simulation(args.imem_name, args.dmem_name, schedule, trace_file=args.trace)
 
 
 def main():
@@ -103,6 +107,7 @@ def main():
     parser_run.add_argument('imem_name', help="Бинарный файл инструкций (IMEM)")
     parser_run.add_argument('dmem_name', help="Бинарный файл памяти (DMEM)")
     parser_run.add_argument('-i', '--input', help="Файл с токенами ввода", default=None)
+    parser_run.add_argument('-t', '--trace', dest='trace', default=None, help="Путь к файлу трассировки логов (например, trace.log)")
     parser_run.set_defaults(func=cmd_run)
 
     args = parser.parse_args()

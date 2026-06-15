@@ -24,19 +24,10 @@ import itertools
 from isa import Opcode, Instruction, Arg, ArgType, Register
 from translator.tokenizer import Token, TokenType
 
-
-# ---------------------------------------------------------------------------
-# Глобальный счётчик уникальных меток (чтобы вложенные IF/BEGIN не конфликтовали)
-# ---------------------------------------------------------------------------
 _label_counter = itertools.count()
 
 def _uid() -> str:
     return str(next(_label_counter))
-
-
-# ---------------------------------------------------------------------------
-# Program — контейнер скомпилированной программы
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Program:
@@ -125,12 +116,10 @@ class Program:
             reg  = val(instr.args[0])
             word = (opc << 25) | (reg << 22)
 
-        elif instr.opcode in (Opcode.RET, Opcode.EI, Opcode.DI, Opcode.IRET):
+        elif instr.opcode in (Opcode.RET, Opcode.EI, Opcode.DI, Opcode.IRET, Opcode.HLT):
             word = opc << 25
 
         return f"{word:032b}"
-
-
 # ---------------------------------------------------------------------------
 # Вспомогательные эмиттеры инструкций
 # ---------------------------------------------------------------------------
@@ -186,8 +175,6 @@ def _push_false(p: Program) -> None:
     emit(p, Instruction(Opcode.LUI, [_reg(R1), _imm(0)], comment="LUI 0 (FALSE)"))
     emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _imm(0)], am=1, comment="ADD 0"))
     emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="PUSH FALSE(0)"))
-
-
 # ---------------------------------------------------------------------------
 # Трансляция: рекурсивный спуск по токенам
 # ---------------------------------------------------------------------------
@@ -218,20 +205,32 @@ class Translator:
         return t
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def translate(self) -> None:
         p = self.program
-        # Стартовый прыжок на MAIN (Pass 2 разрешит)
-        emit(p, Instruction(Opcode.JMP, [_lbl("MAIN")], comment="Jump to MAIN"))
+        emit(p, Instruction(Opcode.CALL, [_lbl("MAIN")], comment="Call entry point"))
+        emit(p, Instruction(Opcode.HLT, [], comment="Stop execution"))
+
+        main_addr = None
 
         while self.pos < len(self.tokens):
+            t = self.peek()
+            if t is None:
+                break
+            
+            w = t.value.upper()
+            if w not in ("VARIABLE", ":", "MAIN") and main_addr is None:
+                main_addr = len(p.instructions)
+
             self._translate_word()
 
-        # Если MAIN не определён явно как метка — помечаем текущую позицию
+        if main_addr is not None:
+            emit(p, Instruction(Opcode.RET, [], comment="RET from MAIN"))
+
         if "MAIN" not in p.labels:
-            p.labels["MAIN"] = len(p.instructions)
+            p.labels["MAIN"] = main_addr if main_addr is not None else len(p.instructions)
 
         self._link()
-
     # ------------------------------------------------------------------
     def _translate_word(self) -> None:
         t = self.peek()
@@ -242,7 +241,7 @@ class Translator:
 
         # ИГНОРИРУЕМ "MAIN", если он встретился как отдельное слово в коде
         # (потому что мы уже сгенерировали JMP на него в начале)
-        if wu == "MAIN" and self.pos == self.pos: # можно проверить контекст, но проще так:
+        if wu == "MAIN" and self.pos == self.pos:
              self.consume()
              return
 
@@ -329,10 +328,6 @@ class Translator:
         # ------ EXECUTE ------
         if wu == "EXECUTE":
             self.consume()
-            # ( xt -- ) : вызвать процедуру по адресу на стеке
-            # RISC не имеет indirect CALL, эмулируем через PUSH/POP и JMP
-            # Сохраняем xt в R4, затем используем CALL с known-адресом диспетчера
-            # Самый простой способ: эмитировать трамплин
             self._emit_execute()
             return
 
@@ -353,11 +348,9 @@ class Translator:
         # Также обработка "MAIN" как метки точки входа
         if wu == "MAIN" and w == "MAIN":
             self.consume()
-            # Голый MAIN в теле программы вне : ... ; — это точка входа
             self.program.labels["MAIN"] = len(self.program.instructions)
             return
 
-        # Всё остальное — вызов процедуры (возможно, forward)
         self.consume()
         emit(self.program,
              Instruction(Opcode.CALL, [_lbl(w)], comment=f"CALL {w}"))
@@ -369,11 +362,9 @@ class Translator:
         p = self.program
         uid = _uid()
 
-        # Снимаем флаг со стека: pop -> R1, CMP R1, R0 (== 0?)
         emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="IF: pop condition"))
         emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0,
                             comment="IF: CMP with 0"))
-        # BEQ -> else/then (если условие == 0)
         lbl_else = f"__else_{uid}"
         emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_else)],
                             comment="IF: BEQ to else/then"))
@@ -393,7 +384,6 @@ class Translator:
             emit(p, Instruction(Opcode.JMP, [_lbl(lbl_end)],
                                 comment="IF: JMP over ELSE"))
             p.labels[lbl_else] = len(p.instructions)
-            # Тело ELSE
             while self.pos < len(self.tokens):
                 nw = self.peek().value.upper()
                 if nw == "THEN":
@@ -415,7 +405,6 @@ class Translator:
         lbl_begin = f"__begin_{uid}"
         p.labels[lbl_begin] = len(p.instructions)
 
-        # Читаем тело до UNTIL или WHILE
         while self.pos < len(self.tokens):
             nw = self.peek().value.upper()
             if nw in ("UNTIL", "WHILE"):
@@ -426,7 +415,6 @@ class Translator:
 
         if nw == "UNTIL":
             self.consume()
-            # BEGIN ... UNTIL: pop condition; if == 0 -> loop back
             emit(p, Instruction(Opcode.POP, [_reg(R1)],
                                 comment="UNTIL: pop condition"))
             emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0,
@@ -436,7 +424,6 @@ class Translator:
 
         elif nw == "WHILE":
             self.consume()
-            # Проверяем условие WHILE
             emit(p, Instruction(Opcode.POP, [_reg(R1)],
                                 comment="WHILE: pop condition"))
             emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0,
@@ -445,7 +432,6 @@ class Translator:
             emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_repeat_end)],
                                 comment="WHILE: BEQ exit loop if false"))
 
-            # Тело WHILE ... REPEAT
             while self.pos < len(self.tokens):
                 nw2 = self.peek().value.upper()
                 if nw2 == "REPEAT":
@@ -459,14 +445,11 @@ class Translator:
 
     # ------------------------------------------------------------------
     # DO ... LOOP  ( limit start -- )
-    # Счётчик хранится на стеке возвратов через PUSH/POP вспомогательных ячеек.
-    # Простая реализация: выделяем 2 ячейки DMEM для I и LIMIT.
     # ------------------------------------------------------------------
     def _translate_do(self) -> None:
         p = self.program
         uid = _uid()
 
-        # Выделяем ячейки для счётчика и лимита (если ещё не выделены)
         lbl_i     = f"__do_i_{uid}"
         lbl_limit = f"__do_limit_{uid}"
         addr_i     = p.allocate_variable(0)
@@ -474,7 +457,6 @@ class Translator:
         p.variables[lbl_i]     = addr_i
         p.variables[lbl_limit] = addr_limit
 
-        # ( limit start -- ) : pop start -> I, pop limit -> LIMIT
         emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="DO: pop start -> R1"))
         emit(p, Instruction(Opcode.ST,  [_reg(R1), _addr(addr_i)], am=0,
                             comment="DO: store start -> I"))
@@ -486,27 +468,21 @@ class Translator:
         lbl_do_end = f"__do_end_{uid}"
         p.labels[lbl_do_top] = len(p.instructions)
 
-        # Проверка: I >= LIMIT -> выход
         emit(p, Instruction(Opcode.LD, [_reg(R1), _addr(addr_i)], am=0,
                             comment="DO: load I"))
         emit(p, Instruction(Opcode.LD, [_reg(R2), _addr(addr_limit)], am=0,
                             comment="DO: load LIMIT"))
         emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R2)], am=0,
                             comment="DO: CMP I, LIMIT"))
-        # Если I >= LIMIT: выход (не N и не Z или Z -> BGT нет, используем BEQ + BGT)
-        # I == LIMIT -> exit (BEQ)
         emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_do_end)],
                             comment="DO: exit if I == LIMIT"))
-        # I > LIMIT -> exit (BGT)
         emit(p, Instruction(Opcode.BGT, [_lbl(lbl_do_end)],
                             comment="DO: exit if I > LIMIT"))
 
-        # Тело DO
         while self.pos < len(self.tokens):
             nw = self.peek().value.upper()
             if nw == "LOOP":
                 break
-            # Слово I внутри DO — кладёт счётчик на стек
             if nw == "I" and self.peek().value == "I":
                 self.consume()
                 emit(p, Instruction(Opcode.LD, [_reg(R1), _addr(addr_i)], am=0,
@@ -514,9 +490,8 @@ class Translator:
                 emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="I: push"))
                 continue
             self._translate_word()
-
         self.expect("LOOP")
-        # I += 1
+
         emit(p, Instruction(Opcode.LD,  [_reg(R1), _addr(addr_i)], am=0,
                             comment="LOOP: load I"))
         emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _imm(1)], am=1,
@@ -527,75 +502,28 @@ class Translator:
                             comment="LOOP: JMP back"))
         p.labels[lbl_do_end] = len(p.instructions)
 
-    # ------------------------------------------------------------------
-    # SET-ISR ( xt vector_num -- )
-    # Простая реализация: вектор 0 хранится в DMEM[0], 1 -> DMEM[1] и т.д.
-    # Выделяем блок ISR-таблицы при первом вызове.
-    # ------------------------------------------------------------------
     def _emit_set_isr(self) -> None:
         p = self.program
-        # Убеждаемся, что ISR-таблица выделена (8 слотов)
         if "__isr_table__" not in p.variables:
             base = len(p.data_memory)
             for _ in range(8):
                 p.data_memory.append(0)
             p.variables["__isr_table__"] = base
-
         base = p.variables["__isr_table__"]
-        # ( xt vector_num -- )
+        
         emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="SET-ISR: pop vector_num -> R2"))
         emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="SET-ISR: pop xt -> R1"))
-        # R3 = base + vector_num
         emit(p, Instruction(Opcode.ADD, [_reg(R3), _reg(R2), _imm(base)], am=1,
                             comment="SET-ISR: R3 = base + vector"))
         emit(p, Instruction(Opcode.ST,  [_reg(R1), _reg(R3)], am=1,
                             comment="SET-ISR: mem[R3] = xt"))
 
-    # ------------------------------------------------------------------
-    # EXECUTE ( xt -- )
-    # Нет indirect CALL в ISA. Трамплин: сохранить xt в R4, затем CALL трамплина,
-    # трамплин делает POP -> R4 и прыгает... но нам нужен RET после.
-    # Эмитируем встроенный трамплин один раз.
-    # ------------------------------------------------------------------
     def _emit_execute(self) -> None:
         p = self.program
         if "__execute_trampoline__" not in p.labels:
-            # Сгенерируем трамплин в конце (после всего кода).
-            # Пока оставим как forward-ref — сгенерируем после основного кода.
-            # Здесь просто эмитируем CALL трамплина.
             pass
-        # ( xt -- ): pop xt -> R4
+        
         emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="EXECUTE: pop xt -> R4"))
-        # Трамплин: PUSH адрес возврата, JMP R4 — но у нас нет JMP Rs.
-        # Используем хак: сохраняем R4 в специальную ячейку DMEM,
-        # затем вызываем диспетчер, который делает LD R4, abs и JMP туда.
-        # Поскольку ISA не имеет JMP Rs, реализуем через патч инструкции
-        # или через таблицу трамплинов.
-        # 
-        # Самый простой корректный вариант для данной ISA:
-        # ST R4 -> [__xt_cell__]; CALL __exec_dispatch__
-        # __exec_dispatch__: LD R4, [__xt_cell__]; (нет JMP R4!)
-        #
-        # ISA не поддерживает косвенный переход. Придётся использовать
-        # BEQ/BNE с CMP или реализовать таблицу диспетчера.
-        # Для учебного транслятора — упрощённая реализация через CALL:
-        # Мы записываем xt в ячейку и потом патчим CALL в рантайме — нереально.
-        #
-        # Оставляем CALL к __execute_trampoline__ как forward ref.
-        # Трамплин будет сгенерирован в _link с помощью LD + записи в IMEM — 
-        # но это SMC (self-modifying code), что нехорошо.
-        #
-        # Наиболее чистое решение для Harvard: EXECUTE работает только
-        # если xt известен статически. Для dop.s это так (MY-XT @ EXECUTE).
-        # Генерируем специальный диспетчер на основе MY-XT.
-        # На практике для учебного проекта допустимо сделать:
-        # pop xt -> R4, сохранить в __exec_cell__, CALL __exec_tramp__
-        # __exec_tramp__: LD R4, __exec_cell__; ... но JMP R4 нет.
-        #
-        # РЕШЕНИЕ: эмулируем через таблицу переходов + сравнения (до 32 процедур).
-        # Для простоты: сохраняем xt в __exec_cell__, затем CALL диспетчера.
-        # Диспетчер читает xt, сравнивает со всеми известными процедурами и CALLит нужную.
-        # Диспетчер генерируется в _link (когда все метки известны).
 
         if "__exec_cell__" not in p.variables:
             p.variables["__exec_cell__"] = p.allocate_variable(0)
@@ -611,13 +539,10 @@ class Translator:
     # ------------------------------------------------------------------
     def _link(self) -> None:
         p = self.program
-
-        # Генерируем EXECUTE-диспетчер если нужен
+        
         if "__exec_cell__" in p.variables:
             self._generate_execute_dispatch()
 
-        # Разрешаем специальные метки __lui__X и __low__X для tick ('X)
-        # Эти метки кодируют старшие 22 бита и младшие 10 бит адреса X
         for instr in p.instructions:
             for arg in instr.args:
                 if arg.arg_type == ArgType.LABEL:
@@ -633,7 +558,6 @@ class Translator:
                         arg.arg_type = ArgType.IMM
                         arg.value = real_addr & 0x3FF
 
-        # Разрешаем обычные метки
         for instr in p.instructions:
             for arg in instr.args:
                 if arg.arg_type == ArgType.LABEL:
@@ -645,16 +569,10 @@ class Translator:
                         arg.arg_type = ArgType.ADDR
                         arg.value = p.labels[name]
                     else:
-                        raise Exception(
-                            f"Линковщик: неразрешённая метка '{name}'"
-                        )
+                        raise Exception(f"Линковщик: неразрешённая метка '{name}'")
 
     def _generate_execute_dispatch(self) -> None:
-        """
-        Генерирует диспетчер для EXECUTE.
-        Для каждой известной процедуры: загружаем её адрес, сравниваем с __exec_cell__,
-        если совпало — CALL процедуры и RET из диспетчера.
-        """
+        """Генерирует диспетчер для EXECUTE."""
         p = self.program
         if "__execute_dispatch__" in p.labels:
             return
@@ -669,10 +587,9 @@ class Translator:
 
         for proc_name, proc_addr in list(p.labels.items()):
             if proc_name.startswith("__"):
-                continue  # пропускаем системные метки
+                continue              
             uid = _uid()
             lbl_no_match = f"__exec_no_{uid}"
-            # Загрузить адрес процедуры в R3
             upper = (proc_addr >> 10) & 0x3FFFFF
             lower = proc_addr & 0x3FF
             emit(p, Instruction(Opcode.LUI, [_reg(R3), _imm(upper)],
@@ -688,14 +605,8 @@ class Translator:
             emit(p, Instruction(Opcode.RET, [], comment="DISP: RET after dispatch"))
             p.labels[lbl_no_match] = len(p.instructions)
 
-        # Если ни одна не совпала — RET (ничего не делаем)
-        emit(p, Instruction(Opcode.RET, [], comment="EXEC_DISP: no match, RET"))
+            emit(p, Instruction(Opcode.RET, [], comment="EXEC_DISP: no match, RET"))
         p.labels[lbl_disp_end] = len(p.instructions)
-
-
-# ---------------------------------------------------------------------------
-# Таблица встроенных Forth-слов
-# ---------------------------------------------------------------------------
 
 def _bi_dup(p: Program):
     emit(p, Instruction(Opcode.POP,  [_reg(R1)], comment="DUP: pop TOS"))
@@ -822,9 +733,7 @@ def _bi_out(p: Program):
     emit(p, Instruction(Opcode.OUT,  [_reg(R1), _imm(1)], comment="OUT: OUT R1, #1"))
 
 def _bi_halt(p: Program):
-    addr = len(p.instructions)
-    emit(p, Instruction(Opcode.JMP, [_addr(addr)], comment="HALT"))
-
+    emit(p, Instruction(Opcode.HLT, [], comment="HALT"))
 
 _BUILTINS = {
     "DUP":     _bi_dup,
@@ -848,11 +757,6 @@ _BUILTINS = {
     "OUT":     _bi_out,
     "HALT":    _bi_halt,
 }
-
-
-# ---------------------------------------------------------------------------
-# Публичный интерфейс
-# ---------------------------------------------------------------------------
 
 def translate_program(tokens: List[Token], result: Program) -> None:
     """Основная точка входа транслятора."""
