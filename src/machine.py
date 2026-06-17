@@ -60,12 +60,10 @@ class DataPath:
         elif op == Opcode.DIV: res = a // b if b != 0 else 0
         elif op == Opcode.MOD: res = a % b if b != 0 else 0
         
-        # Ограничение до 32 бит
         res = sign_extend(res & 0xFFFFFFFF, 32)
         
-        # Обновление флагов
         self.sr_n = 1 if res < 0 else 0
-        self.sr_z = 1 if res == 0 else 0
+        self.sr_z = 1 if res == 0 else 0  
         
         return res
 
@@ -98,6 +96,9 @@ class ControlUnit:
             return
         
         self.tick_count += 1
+        
+        self.dp.check_interrupt_req(self.tick_count)
+        
         try:
             phase = next(self._fsm)
             self._log_state(phase)
@@ -109,23 +110,24 @@ class ControlUnit:
         Генератор, моделирующий логику Step Counter и Control HW Matrix.
         """
         while True:
-            # 1. INTERRUPT LOGIC (Проверка перед каждым новым циклом выборки)
-            if self.dp.sr_ie and self.dp.check_interrupt_req(self.tick_count):
-                yield "INT1" # Аппаратный такт 1: сохраняем PC
+
+            # 1. INTERRUPT LOGIC
+            if self.dp.sr_ie and len(self.dp.in_buffer) > 0:
+                yield "INT1"
                 self.dp.ar = self.dp.rp
                 self.dp.dmem[self.dp.ar] = self.dp.pc
                 
-                yield "INT2" # Аппаратный такт 2: сдвиг RP
-                self.dp.rp -= 1  # Стек возвратов растет вниз (или вверх, зависит от вашей конвенции, здесь вниз)
+                yield "INT2"
+                self.dp.rp -= 1  
                 
-                yield "INT3" # Аппаратный такт 3: сохраняем SR
+                yield "INT3"
                 self.dp.ar = self.dp.rp
                 self.dp.dmem[self.dp.ar] = self.dp.get_sr()
                 
-                yield "INT4" # Аппаратный такт 4: переход на вектор
+                yield "INT4"
                 self.dp.rp -= 1
                 self.dp.sr_ie = 0
-                self.dp.pc = self.dp.imem[1] # Адрес IVT (вектор по умолчанию)
+                self.dp.pc = self.dp.imem[1] 
                 continue
 
             # 2. INSTRUCTION FETCH (IF)
