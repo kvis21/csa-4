@@ -43,10 +43,19 @@ def test_processor(golden):
 
     # 6. Сбор результатов выполнения
     trace_output = trace_io.getvalue()
-    stdout_output = "".join(dp.out_buffer)
+    stdout_sym = ""
+    for val in dp.out_buffer:
+        if 0 <= val <= 0x10FFFF: stdout_sym += chr(val)
+        else: stdout_sym += f"[{val}]"
+    stdout_hex = " ".join([f"{val:02X}" for val in dp.out_buffer])
+    stdout_dec = " ".join([f"{val}" for val in dp.out_buffer])
 
     # 7. Сравнение с ожидаемыми результатами
     assert trace_output == golden.out["out_trace"]
     assert binary_hex == golden.out["out_binary_hex"]
     assert code_log == golden.out["out_code_log"]
-    assert stdout_output == golden.out["out_stdout"]
+
+    assert stdout_sym == golden.out["out_stdout_sym"]
+    assert stdout_dec == golden.out["out_stdout_dec"]
+    assert stdout_hex == golden.out["out_stdout_hex"]
+    

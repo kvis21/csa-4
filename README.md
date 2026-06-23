@@ -1,38 +1,60 @@
 # Симулятор ЭВМ
 
+## Автор
+- ФИО: Панченко Антон Дмитриевич
+- ИСУ: 467018
+- Группа: P3215
+
+## Вариант
+```md
+forth | risc | harv | hw | tick | binary | trap | port | pstr | prob2 | superscalar
+```
+
+| Опция | Реализация |
+| --- | --- |
+| `forth` | Минимальный Forth-подобный язык с обратной польской нотацией |
+| `risk` | RISC-подобная ISA для стекового процессора |
+| `harv` | Раздельные память команд и память данных; транслятор формирует отдельные бинарные образы |
+| `hw` | Блок управления проектируется как hardwired |
+| `tick` | Модель процессора должна исполняться с точностью до такта и вести тактовый журнал |
+| `binary` | Машинный код и память данных сериализуются в настоящие бинарные файлы |
+| `trap` | Ввод реализуется через trap-прерывания по расписанию входных токенов; обработчик пишется на Forth |
+| `port` | реализация ввод-вывода при помощи port-mapped с адресацией портов  |
+| `pstr` | Статические строки хранятся в памяти команд как Pascal-строки |
+| `prob2` | Обязательная программа: Разность сумм квадратов и квадрата сумм  |
+| `superscalar` | Усложнение не было реализовано |
+
 ## Язык программирования
+
+Исходный язык проекта -- Forth-подобный язык с обратной польской нотацией. Программа представляет собой последовательность токенов, которые исполняются слева направо.
 
 ```ebnf
 <label> ::= ([a-z] | [A-Z] | "-" | "_")+ ([a-z] | [A-Z] | [0-9] | "-" | "_")*
-
 <number> ::= ("-")? [0-9]+
 
-<program> ::= (<word> | <procedure> | <init_variable> | <comment>)*
-
+<program> ::= ( <definition> | <word> )*
+<definition> ::= <procedure> | <init_variable>
 <procedure> ::= ": " <label> ( <word> )* " ;"
-
 <init_variable> ::= "VARIABLE " <label>
 
 <conditional_operator> ::= "IF " ( <word> )* ( "ELSE " ( <word> )* )? "THEN"
-
-<do_loop_operator> ::= "DO " ( <word> )* "LOOP"
-
-<begin_until_operator> ::= "BEGIN " ( <word> )* "UNTIL"
-
+<do_loop_operator> ::= "DO " ( <word> | "I" )* "LOOP"
 <begin_while_operator> ::= "BEGIN " ( <word> )* "WHILE " ( <word> )* "REPEAT"
 
-<word> ::= <label> | <number> | <math_operand> | <stack_operand> | <mem_operand> 
-         | <io_operand> | <trap_operand> | <exec_operand> | <string_literal> 
-         | <conditional_operator> | <do_loop_operator> | <begin_until_operator> 
+<word> ::= "MAIN" | <call> | <number> | <math_operand> | <stack_operand> | <mem_operand>
+         | <io_operand> | <trap_operand> | <exec_operand> | <string_literal>
+         | <conditional_operator> | <do_loop_operator> | <begin_until_operator>
          | <begin_while_operator>
+
+<call> ::= <label>
 
 <math_operand> ::= "+" | "-" | "*" | "/" | "MOD" | "=" | "<" | ">"
 
 <stack_operand> ::= "DUP" | "DROP" | "SWAP" | "OVER" | "ROT" | "-ROT" | "TUCK"
 
-<mem_operand> ::= "@" | "!" 
+<mem_operand> ::= "@" | "!"
 
-<io_operand> ::= "IN" | "OUT"
+<io_operand> ::= "IN" | "OUT" | "HALT"
 
 <trap_operand> ::= "EI" | "DI" | "IRET" | "SET-ISR"
 
@@ -41,7 +63,6 @@
 <string_literal> ::= "P\" " <any_text_until_quote> "\""
 
 <comment> ::= "\ " <any_text_until_newline>
-
 ```
 
 ---
@@ -106,7 +127,7 @@
 
 ## Организация памяти
 
-Архитектура процессора базируется на **Гарвардской модели**, что подразумевает полное физическое и логическое разделение памяти команд и памяти данных.
+Архитектура процессора базируется на Гарвардской модели, что подразумевает полное физическое и логическое разделение памяти команд и памяти данных.
 
 - **Размер машинного слова:** 32 бита. Память команд и память данных являются слово-адресуемыми
 - **Размер регистров:** 32 бита.

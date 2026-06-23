@@ -136,19 +136,26 @@ def emit(p: Program, instr: Instruction) -> int:
 
 
 def _push_const(p: Program, val: int, comment: str = "") -> None:
-    """Загрузить 32-битную константу в R1 и положить на стек."""
+    """Загрузить константу на стек с учетом кэширования R4/R5."""
     upper = (val >> 10) & 0x3FFFFF
     lower = val & 0x3FF
-    emit(p, Instruction(Opcode.LUI, [_reg(R1), _imm(upper)], comment=comment or f"LUI #{upper} (const {val})"))
-    emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _imm(lower)], am=1, comment=f"ADD #{lower} (const {val})"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment=f"PUSH {val}"))
+    
+    # Сдвигаем стек вниз: старый NOS уходит в память, TOS становится NOS
+    emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="save NOS to mem"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="TOS -> NOS"))
+    
+    # Пишем новое значение прямо в TOS (R4)
+    emit(p, Instruction(Opcode.LUI, [_reg(R4), _imm(upper)], comment=comment or f"LUI #{upper} (const {val})"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R4), _imm(lower)], am=1, comment=f"ADD #{lower} (const {val})"))
 
 
 def _push_label(p: Program, lbl: str, comment: str = "") -> None:
-    """Положить на стек адрес метки (разрешается при линковке через R1)."""
-    emit(p, Instruction(Opcode.LUI, [_reg(R1), _lbl(f"__lui__{lbl}")], comment=comment or f"LUI addr({lbl})"))
-    emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _lbl(f"__low__{lbl}")], am=1, comment=f"ADD low addr({lbl})"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment=f"PUSH xt({lbl})"))
+    """Положить адрес метки на стек с учетом кэширования R4/R5."""
+    emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="save NOS to mem"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="TOS -> NOS"))
+    
+    emit(p, Instruction(Opcode.LUI, [_reg(R4), _lbl(f"__lui__{lbl}")], comment=comment or f"LUI addr({lbl})"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R4), _lbl(f"__low__{lbl}")], am=1, comment=f"ADD low addr({lbl})"))
 
 class Translator:
     def __init__(self, tokens: list[Token], program: Program):
@@ -309,8 +316,11 @@ class Translator:
         p = self.program
         uid = _uid()
 
-        emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="IF: pop condition"))
-        emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0, comment="IF: CMP with 0"))
+        emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R4), _imm(0)], am=1, comment="IF: save flag to R1"))
+        emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="IF: TOS = NOS"))
+        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="IF: pop new NOS"))
+        emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0, comment="IF: CMP saved flag with 0"))
+
         lbl_else = f"__else_{uid}"
         emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_else)], comment="IF: BEQ to else/then"))
 
@@ -345,22 +355,19 @@ class Translator:
 
         while self.pos < len(self.tokens):
             nw = self.peek().value.upper()
-            if nw in ("UNTIL", "WHILE"):
+            if nw in ("WHILE", ):
                 break
             self._translate_word()
 
         nw = self.peek().value.upper() if self.peek() else ""
 
-        if nw == "UNTIL":
+        if nw == "WHILE":
             self.consume()
-            emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="UNTIL: pop condition"))
-            emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0, comment="UNTIL: CMP with 0"))
-            emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_begin)], comment="UNTIL: BEQ back if false"))
+            emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R4), _imm(0)], am=1, comment="WHILE: save flag to R1"))
+            emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="WHILE: TOS = NOS"))
+            emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="WHILE: pop new NOS"))
+            emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0, comment="WHILE: CMP saved flag with 0"))
 
-        elif nw == "WHILE":
-            self.consume()
-            emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="WHILE: pop condition"))
-            emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R0)], am=0, comment="WHILE: CMP with 0"))
             lbl_repeat_end = f"__repeat_{uid}"
             emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_repeat_end)], comment="WHILE: BEQ exit loop if false"))
 
@@ -385,10 +392,10 @@ class Translator:
         p.variables[lbl_i] = addr_i
         p.variables[lbl_limit] = addr_limit
 
-        emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="DO: pop start -> R1"))
-        emit(p, Instruction(Opcode.ST, [_reg(R1), _addr(addr_i)], am=0, comment="DO: store start -> I"))
-        emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="DO: pop limit -> R1"))
-        emit(p, Instruction(Opcode.ST, [_reg(R1), _addr(addr_limit)], am=0, comment="DO: store limit -> LIMIT"))
+        emit(p, Instruction(Opcode.ST, [_reg(R4), _addr(addr_i)], am=0, comment="DO: store start(TOS) -> I"))
+        emit(p, Instruction(Opcode.ST, [_reg(R5), _addr(addr_limit)], am=0, comment="DO: store limit(NOS) -> LIMIT"))
+        emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="DO: pop new TOS"))
+        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="DO: pop new NOS"))
 
         lbl_do_top = f"__do_top_{uid}"
         lbl_do_end = f"__do_end_{uid}"
@@ -407,7 +414,9 @@ class Translator:
             if nw == "I" and self.peek().value == "I":
                 self.consume()
                 emit(p, Instruction(Opcode.LD, [_reg(R1), _addr(addr_i)], am=0, comment="I: load loop counter"))
-                emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="I: push"))
+                emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="I: save NOS"))
+                emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="I: TOS->NOS"))
+                emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R1), _imm(0)], am=1, comment="I: TOS=R1"))
                 continue
             self._translate_word()
         self.expect("LOOP")
@@ -427,23 +436,30 @@ class Translator:
             p.variables["__isr_table__"] = base
         base = p.variables["__isr_table__"]
 
-        emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="SET-ISR: pop vector_num -> R2"))
-        emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="SET-ISR: pop xt -> R1"))
+        # xt in NOS(R5), vector_num in TOS(R4)
+        emit(p, Instruction(Opcode.ADD, [_reg(R2), _reg(R4), _imm(0)], am=1, comment="SET-ISR: vector_num = TOS"))
+        emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R5), _imm(0)], am=1, comment="SET-ISR: xt = NOS"))
         emit(p, Instruction(Opcode.ADD, [_reg(R3), _reg(R2), _imm(base)], am=1, comment="SET-ISR: R3 = base + vector"))
         emit(p, Instruction(Opcode.ST, [_reg(R1), _reg(R3)], am=1, comment="SET-ISR: mem[R3] = xt"))
+        
+        emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="SET-ISR: pop new TOS"))
+        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="SET-ISR: pop new NOS"))
 
     def _emit_execute(self) -> None:
         p = self.program
         if "__execute_trampoline__" not in p.labels:
             pass
 
-        emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="EXECUTE: pop xt -> R4"))
-
         if "__exec_cell__" not in p.variables:
             p.variables["__exec_cell__"] = p.allocate_variable(0)
 
         cell = p.variables["__exec_cell__"]
-        emit(p, Instruction(Opcode.ST, [_reg(R4), _addr(cell)], am=0, comment="EXECUTE: store xt"))
+        
+        # xt is in TOS(R4)
+        emit(p, Instruction(Opcode.ST, [_reg(R4), _addr(cell)], am=0, comment="EXECUTE: store xt(TOS)"))
+        emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="EXECUTE: TOS=NOS"))
+        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="EXECUTE: pop new NOS"))
+        
         emit(p, Instruction(Opcode.CALL, [_lbl("__execute_dispatch__")], comment="EXECUTE: call dispatch"))
 
     # Pass 2: линковка
@@ -519,149 +535,121 @@ class Translator:
 
 
 def _bi_dup(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="DUP: pop TOS"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="DUP: push copy 1"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="DUP: push copy 2"))
+    # DUP ( a -- a a )
+    emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="DUP: save NOS to mem"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="DUP: NOS = TOS"))
 
 
 def _bi_drop(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="DROP"))
+    # DROP ( a -- )
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="DROP: TOS = NOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="DROP: pop new NOS from mem"))
 
 
 def _bi_swap(p: Program) -> None:
-    #emit(p, Instruction(Opcode.ADD, [_reg(R6), _reg(R6), _imm(2)], am=1, comment="SWAP: SP + 2"))
-    #emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="SWAP: push old TOS"))
-    #emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="SWAP: push old NOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="SWAP: pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="SWAP: pop 2nd"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="SWAP: push old TOS"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="SWAP: push old 2nd"))
+    # SWAP ( a b -- b a )
+    emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R4), _imm(0)], am=1, comment="SWAP: tmp = TOS"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="SWAP: TOS = NOS"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R1), _imm(0)], am=1, comment="SWAP: NOS = tmp"))
 
 
 def _bi_over(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="OVER: pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="OVER: pop 2nd"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="OVER: push 2nd"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="OVER: push TOS"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="OVER: push copy of 2nd"))
+    # OVER ( a b -- a b a )
+    emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="OVER: save old NOS(a) to mem"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R5), _imm(0)], am=1, comment="OVER: tmp = NOS(b)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="OVER: NOS = TOS(a)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R1), _imm(0)], am=1, comment="OVER: TOS = tmp(b)"))
 
 
 def _bi_rot(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="ROT: pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="ROT: pop 2nd"))
-    emit(p, Instruction(Opcode.POP, [_reg(R3)], comment="ROT: pop 3rd"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="ROT: push 2nd"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="ROT: push TOS"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R3)], comment="ROT: push 3rd on top"))
+    # ROT ( c b a -- b a c ) -> Target: [SP]=b, NOS=a, TOS=c
+    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="ROT: R1 = c (3rd from mem)"))
+    emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="ROT: mem[SP] = b (old NOS)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="ROT: NOS = a (old TOS)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R1), _imm(0)], am=1, comment="ROT: TOS = c"))
 
 
 def _bi_nrot(p: Program) -> None:
-    # -ROT ( a b c -- c a b )
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="-ROT: pop TOS(c)"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="-ROT: pop 2nd(b)"))
-    emit(p, Instruction(Opcode.POP, [_reg(R3)], comment="-ROT: pop 3rd(a)"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="-ROT: push c"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R3)], comment="-ROT: push a"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="-ROT: push b"))
+    # -ROT ( c b a -- a c b ) -> Target: [SP]=a, NOS=c, TOS=b
+    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="-ROT: R1 = c (3rd from mem)"))
+    emit(p, Instruction(Opcode.PUSH, [_reg(R4)], comment="-ROT: mem[SP] = a (old TOS)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="-ROT: TOS = b (old NOS)"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R1), _imm(0)], am=1, comment="-ROT: NOS = c"))
 
 
 def _bi_tuck(p: Program) -> None:
-    # TUCK ( a b -- b a b )
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="TUCK: pop TOS(b)"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="TUCK: pop 2nd(a)"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="TUCK: push b"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R2)], comment="TUCK: push a"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="TUCK: push b again"))
+    # TUCK ( a b -- b a b ) 
+    emit(p, Instruction(Opcode.PUSH, [_reg(R4)], comment="TUCK: push TOS(b) under NOS(a)"))
 
 
 def _bi_add(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="+ pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="+ pop 2nd"))
-    emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _reg(R2)], am=0, comment="+ ADD"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="+ push result"))
+    emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _reg(R4)], am=0, comment="+: TOS = NOS + TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="+: pop new NOS"))
 
 
 def _bi_sub(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="- pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="- pop 2nd"))
-    emit(p, Instruction(Opcode.SUB, [_reg(R1), _reg(R1), _reg(R2)], am=0, comment="- SUB"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="- push result"))
+    emit(p, Instruction(Opcode.SUB, [_reg(R4), _reg(R5), _reg(R4)], am=0, comment="-: TOS = NOS - TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="-: pop new NOS"))
 
 
 def _bi_mul(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="* pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="* pop 2nd"))
-    emit(p, Instruction(Opcode.MUL, [_reg(R1), _reg(R1), _reg(R2)], am=0, comment="* MUL"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="* push result"))
+    emit(p, Instruction(Opcode.MUL, [_reg(R4), _reg(R5), _reg(R4)], am=0, comment="*: TOS = NOS * TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="*: pop new NOS"))
 
 
 def _bi_div(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="/ pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="/ pop 2nd"))
-    emit(p, Instruction(Opcode.DIV, [_reg(R1), _reg(R1), _reg(R2)], am=0, comment="/ DIV"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="/ push result"))
+    emit(p, Instruction(Opcode.DIV, [_reg(R4), _reg(R5), _reg(R4)], am=0, comment="/: TOS = NOS / TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="/: pop new NOS"))
 
 
 def _bi_mod(p: Program) -> None:
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="MOD pop TOS"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="MOD pop 2nd"))
-    emit(p, Instruction(Opcode.MOD, [_reg(R1), _reg(R1), _reg(R2)], am=0, comment="MOD"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="MOD push result"))
+    emit(p, Instruction(Opcode.MOD, [_reg(R4), _reg(R5), _reg(R4)], am=0, comment="MOD: TOS = NOS % TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="MOD: pop new NOS"))
 
 
 def _bi_cmp_op(opcode_branch: Opcode, name: str):
     """Фабрика: ( a b -- 1/0 ) через CMP + ветвление."""
-
-    def _impl(p: Program):
+    def _impl(p: Program) -> None:
         uid = _uid()
         lbl_true = f"__{name}_t_{uid}"
         lbl_end = f"__{name}_e_{uid}"
-        emit(p, Instruction(Opcode.POP, [_reg(R2)], comment=f"{name}: pop b"))
-        emit(p, Instruction(Opcode.POP, [_reg(R1)], comment=f"{name}: pop a"))
-        emit(p, Instruction(Opcode.CMP, [_reg(R1), _reg(R2)], am=0, comment=f"{name}: CMP a, b"))
+        
+        emit(p, Instruction(Opcode.CMP, [_reg(R5), _reg(R4)], am=0, comment=f"{name}: CMP NOS, TOS"))
         emit(p, Instruction(opcode_branch, [_lbl(lbl_true)], comment=f"{name}: branch if true"))
-
-        emit(p, Instruction(Opcode.LUI, [_reg(R1), _imm(0)], comment=f"{name}: false=0"))
-        emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _imm(0)], am=1))
+        emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R0), _imm(0)], am=1, comment=f"{name}: TOS = 0 (False)"))
         emit(p, Instruction(Opcode.JMP, [_lbl(lbl_end)], comment=f"{name}: skip true"))
         p.labels[lbl_true] = len(p.instructions)
-        
-        emit(p, Instruction(Opcode.LUI, [_reg(R1), _imm(0)], comment=f"{name}: true=1"))
-        emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R1), _imm(1)], am=1))
+        emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R0), _imm(1)], am=1, comment=f"{name}: TOS = 1 (True)"))
         p.labels[lbl_end] = len(p.instructions)
-        emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment=f"{name}: push flag"))
-
+        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment=f"{name}: pop new NOS"))
     return _impl
 
 
-def _bi_fetch(p: Program):
+def _bi_fetch(p: Program) -> None:
     # @ ( addr -- val )
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="@ pop addr"))
-    emit(p, Instruction(Opcode.LD, [_reg(R1), _reg(R1)], am=1, comment="@ LD R1=[R1]"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="@ push val"))
+    # Адрес лежит в R4. Результат кладем туда же. NOS не трогаем.
+    emit(p, Instruction(Opcode.LD, [_reg(R4), _reg(R4)], am=1, comment="@ LD TOS=[TOS]"))
 
 
-def _bi_store(p: Program):
+def _bi_store(p: Program) -> None:
     # ! ( val addr -- )
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="! pop addr"))
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="! pop val"))
-    emit(p, Instruction(Opcode.ST, [_reg(R2), _reg(R1)], am=1, comment="! ST [R1]=R2"))
+    emit(p, Instruction(Opcode.ST, [_reg(R5), _reg(R4)], am=1, comment="! ST [TOS]=NOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="! pop new TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="! pop new NOS"))
 
 
 def _bi_in(p: Program):
-    # IN ( port_num -- val )
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="IN: pop port"))
-    emit(p, Instruction(Opcode.IN, [_reg(R1), _imm(0)], comment="IN: IN R1, #0"))
-    emit(p, Instruction(Opcode.PUSH, [_reg(R1)], comment="IN: push val"))
-
+    # IN ( port -- val )
+    emit(p, Instruction(Opcode.IN, [_reg(R4), _imm(0)], comment="IN: IN TOS, #0"))
 
 def _bi_out(p: Program):
-    emit(p, Instruction(Opcode.POP, [_reg(R2)], comment="OUT: pop port_num"))
-    emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="OUT: pop val"))
-    emit(p, Instruction(Opcode.OUT, [_reg(R1), _imm(1)], comment="OUT: OUT R1, #1"))
+    # OUT ( val port -- )
+    emit(p, Instruction(Opcode.OUT, [_reg(R5), _imm(1)], comment="OUT: OUT NOS, #1"))
+    emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="OUT: pop new TOS"))
+    emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="OUT: pop new NOS"))
 
 
-def _bi_halt(p: Program):
+def _bi_halt(p: Program) -> None:
     emit(p, Instruction(Opcode.HLT, [], comment="HALT"))
 
 
