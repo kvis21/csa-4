@@ -247,7 +247,6 @@ forth | risc | harv | hw | tick | binary | trap | port | pstr | prob2 | supersca
 
 | Команда | Опкод | Такты (EF) | Описание |
 | --- | --- | --- | --- |
-
 | LUI Rd, #imm | 0x00 | 1 | Rd <- imm << 10 |
 | LD Rd, Rs | 0x01 | 2 | Rd <- mem[Rs] |
 | ST Rd, Rs | 0x02 | 2 | mem[Rs] <- Rd |
