@@ -1,14 +1,15 @@
 import argparse
+from argparse import Namespace
 import struct
 import sys
 
-from machine import run_simulation
-from translator.tokenizer import Tokenizer
-from translator.translator import Program, translate_program
-from utils import build_hex_dump, parse_schedule
+from src.machine import run_simulation
+from src.translator.tokenizer import Tokenizer
+from src.translator.translator import Program, translate_program
+from src.utils import build_hex_dump, parse_schedule
 
 
-def cmd_translate(args):
+def cmd_translate(args: Namespace) -> None:
     """Логика трансляции в раздельные файлы (Harvard Architecture)."""
     source_name = args.source_name
     binary_name = args.imem_name
@@ -51,8 +52,9 @@ def cmd_translate(args):
     print(f"    Данных (DMEM):     {len(program.data_memory)} слов")
 
 
-def cmd_run(args):
+def cmd_run(args: Namespace) -> None:
     """Логика запуска симулятора."""
+    schedule = []
     if args.input:
         try:
             with open(args.input, encoding="utf-8") as f:
@@ -62,7 +64,7 @@ def cmd_run(args):
     run_simulation(args.imem_name, args.dmem_name, schedule, trace_file=args.trace)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Транслятор и эмулятор Гарвардского RISC-процессора.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

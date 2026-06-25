@@ -7,5 +7,6 @@ VARIABLE LOOP-I
     1 LOOP-I ! 
     BEGIN LOOP-I 
     @ 101 < 
-    WHILE SUM @ LOOP-I @ + SUM ! LOOP-I @ DUP * SUM-SQ @ + SUM-SQ ! LOOP-I @ 1 + LOOP-I ! REPEAT SUM @ DUP * SUM-SQ @ - 1 OUT ;
+    WHILE SUM @ LOOP-I @ + SUM ! LOOP-I @ DUP * SUM-SQ @ + SUM-SQ ! LOOP-I @ 1 + LOOP-I ! 
+    REPEAT SUM @ DUP * SUM-SQ @ - 1 OUT ;
 MAIN

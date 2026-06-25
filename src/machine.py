@@ -1,7 +1,9 @@
 import sys
-import os
 import struct
-from isa import Opcode
+from src.isa import Opcode
+from src.utils import ScheduleType
+from typing import TextIO
+from collections.abc import Generator
 
 def sign_extend(value: int, bits: int) -> int:
     """Аппаратное расширение знака для отрицательных чисел."""
@@ -10,45 +12,39 @@ def sign_extend(value: int, bits: int) -> int:
 
 
 class DataPath:
-    def __init__(self, dmem_size: int, imem_size: int, input_schedule: list):
+    def __init__(self, dmem_size: int, imem_size: int, input_schedule: ScheduleType):
         self.dmem = [0] * dmem_size
         self.imem = [0] * imem_size
 
         self.regs = [0] * 8
-        
-        # R6 = SP, R7 = RP
-        self.regs[6] = dmem_size - 1 
-        self.regs[7] = dmem_size // 2 
 
-        # Специализированные регистры
+        self.regs[6] = dmem_size - 1
+        self.regs[7] = dmem_size // 2
+
         self.pc = 0
 
-        # Буферы и внутренние регистры (Latch)
         self.ir = 0
         self.ar = 0
         self.data_bus = 0
 
-        # Регистр статуса (SR)
-        self.sr_n = 0  # Negative
-        self.sr_z = 0  
-        self.sr_ie = 0  
+        self.sr_n = 0
+        self.sr_z = 0
+        self.sr_ie = 0
 
-        self.input_schedule = input_schedule  
-        self.in_buffer = []
-        self.out_buffer = []
+        self.input_schedule = input_schedule
+        self.in_buffer: list[int] = []
+        self.out_buffer: list[int] = []
 
     def get_sr(self) -> int:
         """Аппаратная упаковка флагов в машинное слово для IRET/TRAP."""
         return (self.sr_n << 2) | (self.sr_z << 1) | self.sr_ie
 
-    def set_sr(self, val: int):
-        """Аппаратная распаковка флагов."""
+    def set_sr(self, val: int) -> None:
         self.sr_n = (val >> 2) & 1
         self.sr_z = (val >> 1) & 1
         self.sr_ie = val & 1
 
     def alu_execute(self, op: Opcode, a: int, b: int) -> int:
-        """Моделирование работы АЛУ."""
         res = 0
         if op == Opcode.ADD:
             res = a + b
@@ -77,20 +73,15 @@ class DataPath:
 
 
 class ControlUnit:
-    """
-    Моделирует устройство управления (Hardwired).
-    Каждый 'yield' представляет собой один такт (фронт синхросигнала).
-    """
-
-    def __init__(self, dp: DataPath, output=sys.stdout):
+    def __init__(self, dp: DataPath, output: TextIO = sys.stdout):
         self.dp = dp
         self.tick_count = 0
         self.halted = False
         self._fsm = self._microcode_fsm()
         self.output = output
 
-    def tick(self):
-        """Продвигает процессор ровно на 1 такт."""
+    def tick(self) -> None:
+        """Продвигает процессор на 1 такт."""
         if self.halted:
             return
 
@@ -104,7 +95,7 @@ class ControlUnit:
         except StopIteration:
             self.halted = True
 
-    def _microcode_fsm(self):
+    def _microcode_fsm(self) -> Generator[str]:
         """
         Генератор, моделирующий логику Step Counter и Control HW Matrix.
         """
@@ -112,12 +103,12 @@ class ControlUnit:
             # 1. INTERRUPT LOGIC
             if self.dp.sr_ie and len(self.dp.in_buffer) > 0:
                 yield "INT1"
-                self.dp.regs[7] -= 1  
+                self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
                 self.dp.dmem[self.dp.ar] = self.dp.pc
 
                 yield "INT2"
-                self.dp.regs[7] -= 1  
+                self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
                 self.dp.dmem[self.dp.ar] = self.dp.get_sr()
 
@@ -133,7 +124,7 @@ class ControlUnit:
                 yield "HALT"
                 break
 
-            self.dp.pc += 1  
+            self.dp.pc += 1
             yield "IF"
 
             # 3. ADDRESS FETCH (AF)
@@ -155,9 +146,7 @@ class ControlUnit:
                 rd = (self.dp.ir >> 22) & 0x7
                 rs1 = (self.dp.ir >> 19) & 0x7
                 am = (self.dp.ir >> 18) & 0x1
-            elif opcode in (Opcode.IN, Opcode.OUT):
-                rd = (self.dp.ir >> 22) & 0x7 
-            elif opcode in (Opcode.PUSH, Opcode.POP):
+            elif opcode in (Opcode.IN, Opcode.OUT) or opcode in (Opcode.PUSH, Opcode.POP):
                 rd = (self.dp.ir >> 22) & 0x7
 
             yield "AF"
@@ -179,7 +168,7 @@ class ControlUnit:
                     yield "EX1"
                     self.dp.regs[rd] = self.dp.data_bus
                     yield "EX2"
-                else:  
+                else:
                     self.dp.dmem[self.dp.ar] = self.dp.regs[rd]
                     yield "EX1"
                     yield "EX2"
@@ -200,11 +189,17 @@ class ControlUnit:
             elif opcode in (Opcode.JMP, Opcode.BEQ, Opcode.BNE, Opcode.BGT, Opcode.BLT):
                 addr25 = self.dp.ir & 0x1FFFFFF
                 take_branch = False
-                if (opcode == Opcode.JMP or \
-                    opcode == Opcode.BEQ and self.dp.sr_z == 1 or \
-                    opcode == Opcode.BNE and self.dp.sr_z == 0 or \
-                    opcode == Opcode.BGT and self.dp.sr_z == 0 and self.dp.sr_n == 0 or \
-                    opcode == Opcode.BLT and self.dp.sr_n == 1
+                if (
+                    opcode == Opcode.JMP
+                    or opcode == Opcode.BEQ
+                    and self.dp.sr_z == 1
+                    or opcode == Opcode.BNE
+                    and self.dp.sr_z == 0
+                    or opcode == Opcode.BGT
+                    and self.dp.sr_z == 0
+                    and self.dp.sr_n == 0
+                    or opcode == Opcode.BLT
+                    and self.dp.sr_n == 1
                 ):
                     take_branch = True
 
@@ -217,7 +212,7 @@ class ControlUnit:
                 self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
                 yield "EX1"
-                self.dp.dmem[self.dp.ar] = self.dp.pc 
+                self.dp.dmem[self.dp.ar] = self.dp.pc
                 self.dp.pc = addr25
                 yield "EX2"
 
@@ -250,7 +245,7 @@ class ControlUnit:
                     else:
                         self.dp.regs[rd] = 0
                 yield "EX1"
-                
+
             elif opcode == Opcode.OUT:
                 port = self.dp.ir & 0x3FFFFF
                 if port == 1:
@@ -277,33 +272,38 @@ class ControlUnit:
                 self.dp.set_sr(self.dp.dmem[self.dp.ar])
                 self.dp.regs[7] += 1
                 yield "EX2"
-                
+
                 self.dp.ar = self.dp.regs[7]
                 yield "EX3"
                 self.dp.pc = self.dp.dmem[self.dp.ar]
                 self.dp.regs[7] += 1
                 yield "EX4"
 
-    def _log_state(self, phase: str):
+    def _log_state(self, phase: str) -> None:
         flags = f"N:{self.dp.sr_n} Z:{self.dp.sr_z} IE:{self.dp.sr_ie}"
         r_str = "  ".join([f"R{i}:{self.dp.regs[i]:04X}" for i in range(8)])
-        log_str = (f"Tick: {self.tick_count:04} | {phase:^4} |  "
-                   f"PC: {self.dp.pc:04X} | IR: {self.dp.ir:08X} |  "
-                   f"AR: {self.dp.ar:04X} | {flags} | {r_str}")
+        log_str = (
+            f"Tick: {self.tick_count:04} | {phase:^4} |  "
+            f"PC: {self.dp.pc:04X} | IR: {self.dp.ir:08X} |  "
+            f"AR: {self.dp.ar:04X} | {flags} | {r_str}"
+        )
         print(log_str, file=self.output)
 
 
-def load_binary(filename: str) -> list:
-    memory = []
-    with open(filename, 'rb') as f:
+def load_binary(filename: str) -> list[int]:
+    memory: list[int] = []
+    with open(filename, "rb") as f:
         while chunk := f.read(4):
             if len(chunk) == 4:
-                val = struct.unpack('>I', chunk)[0]
+                val = struct.unpack(">I", chunk)[0]
                 memory.append(val)
     return memory
 
 
-def run_simulation(imem_file: str, dmem_file: str, schedule: list, trace_file: str = None):
+def run_simulation(imem_file: str,
+                   dmem_file: str,
+                   schedule: ScheduleType,
+                   trace_file: str = "") -> None:
     """Точка входа для запуска эмулятора."""
     imem = load_binary(imem_file)
     dmem = load_binary(dmem_file)
@@ -316,31 +316,8 @@ def run_simulation(imem_file: str, dmem_file: str, schedule: list, trace_file: s
     dp.imem = imem
     dp.dmem = dmem
 
-    if trace_file:
-        log_output = open(trace_file, 'w', encoding='utf-8')
-    else:
-        log_output = sys.stdout
-        
-    try:
+    with open(trace_file, "w", encoding="utf-8") if trace_file else sys.stdout as log_output :
         cu = ControlUnit(dp, log_output)
-        print("=== ЗАПУСК СИМУЛЯЦИИ ===", file=log_output)
         limit = 100000
         while not cu.halted and cu.tick_count < limit:
             cu.tick()
-        if trace_file:
-            print(f"[+] Трассировка успешно сохранена в файл: {trace_file}")
-    finally:
-        if trace_file:
-            log_output.close()
-
-    print("\n=== РЕЗУЛЬТАТЫ ===")
-    print(f"Выполнено тактов: {cu.tick_count}")
-    print(f"Вывод: {''.join(dp.out_buffer)}")
-
-
-if __name__ == "__main__":
-    dummy_schedule = [(10, 'h'), (20, 'e'), (30, 'l'), (40, 'l'), (50, 'o')]
-    if len(sys.argv) >= 3:
-        run_simulation(sys.argv[1], sys.argv[2], dummy_schedule)
-    else:
-        print("Usage: python machine.py imem.bin dmem.bin")

@@ -1,2 +1,6 @@
-: MAIN BEGIN 0 IN 1 OUT 0 UNTIL ;
+: MAIN
+    BEGIN 0 IN DUP 0 >     
+    WHILE 1 OUT  
+    REPEAT 
+    DROP ;
 MAIN

@@ -4,7 +4,12 @@ VARIABLE BL
 VARIABLE BH
 VARIABLE SL
 VARIABLE SH
-: DADD BH ! BL ! AH ! AL ! AL @ BL @ + SL ! AH @ BH @ + SH ! SL @ AL @ < IF SH @ 1 + SH ! THEN SL @ SH @ ;
-: DSUB BH ! BL ! AH ! AL ! AL @ BL @ - SL ! AH @ BH @ - SH ! AL @ BL @ < IF SH @ 1 - SH ! THEN SL @ SH @ ;
-: MAIN 100000 0 200000 0 DADD 1 OUT 1 OUT 500000 1 200000 0 DSUB 1 OUT 1 OUT ;
+: DADD 
+    BH ! BL ! AH ! AL ! AL @ BL @ + SL ! AH @ BH @ + SH ! SL @ AL @ < IF SH @ 1 + SH ! THEN SL @ SH @ ;
+: DSUB 
+    BH ! BL ! AH ! AL ! AL @ BL @ - SL ! AH @ BH @ - SH ! AL @ BL @ < IF SH @ 1 - SH ! THEN SL @ SH @ ;
+: MAIN 
+    100000 0 200000 0 
+    DADD 1 OUT 1 OUT 500000 1 200000 0 
+    DSUB 1 OUT 1 OUT ;
 MAIN

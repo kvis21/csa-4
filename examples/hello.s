@@ -3,5 +3,7 @@ VARIABLE STR-ADDR
     DUP @ SWAP 1 + SWAP 
     BEGIN DUP 0 > WHILE OVER @ 1 OUT SWAP 1 + SWAP 1 -
     REPEAT DROP DROP ;
-: MAIN P"Hello World!" PRINT HALT ;
+: MAIN 
+    P"Hello World!" 
+    PRINT ;
 MAIN

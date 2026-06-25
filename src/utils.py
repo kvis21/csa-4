@@ -1,9 +1,11 @@
-from translator.translator import Program
+from src.translator.translator import Program
+
+type ScheduleType = list[tuple[int, int]]
 
 
-def parse_schedule(content: str):
+def parse_schedule(content: str) -> ScheduleType:
     """парсер файла расписания ввода."""
-    schedule = []
+    schedule: list[tuple[int, int]] = []
     if not content:
         return schedule
 
@@ -11,17 +13,16 @@ def parse_schedule(content: str):
         line = line.strip()
         if not line:
             continue
-            
+
         parts = line.split(None, 1)
-        if len(parts) < 2: 
+        if len(parts) < 2:
             assert SyntaxError("Invalid schedule format")
 
         tick = int(parts[0])
         val_str = parts[1].strip()
-        
-        if (val_str.startswith("'") and val_str.endswith("'")) or \
-           (val_str.startswith('"') and val_str.endswith('"')):
-            inner_char = val_str[1:2] if len(val_str) > 2 else 0
+
+        if (val_str.startswith("'") and val_str.endswith("'")) or (val_str.startswith('"') and val_str.endswith('"')):
+            inner_char = val_str[1:2] if len(val_str) > 2 else '\0'
             char_code = ord(inner_char)
         elif val_str.lower().startswith("0x"):
             char_code = int(val_str, 16)
@@ -40,20 +41,21 @@ def build_hex_dump(program: Program, machine_code: list[str]) -> str:
 
     for i, (bin_str, instr) in enumerate(zip(machine_code, program.instructions)):
         hex_val = f"0x{int(bin_str, 2):08X}"
-        lines.append(f"{i:04X} - {hex_val} - {instr}")
+        lines.append(f"{i*4:04X} - {hex_val} - {instr}")
 
     if program.data_memory:
         lines.append("\n=== Data Memory (DMEM) ===")
         for i, val in enumerate(program.data_memory):
             hex_val = f"0x{val & 0xFFFFFFFF:08X}"
             char_repr = repr(chr(val)) if 32 <= val <= 126 else "'.'"
-            lines.append(f"{i:04X} - {hex_val} - {val} ({char_repr})")
+            lines.append(f"{i*4:04X} - {hex_val} - {val} ({char_repr})")
 
     return "\n".join(lines)
 
 
 if __name__ == "__main__":
-    print(parse_schedule("""    1 t
+    print(
+        parse_schedule("""    1 t
   2 e
   3 s
   4 t
@@ -61,4 +63,5 @@ if __name__ == "__main__":
   6 0x31
   7 '-1'
   10 10
-  12 '0'"""))
+  12 '0'""")
+    )

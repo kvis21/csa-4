@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 import itertools
+from collections.abc import Callable
 
-from isa import Opcode, Instruction, Arg, ArgType, Register
-from translator.tokenizer import Token, TokenType
+from src.isa import Opcode, Instruction, Arg, ArgType, Register
+from src.translator.tokenizer import Token, TokenType
 
 _label_counter = itertools.count()
 
@@ -14,12 +15,11 @@ def _uid() -> str:
 @dataclass
 class Program:
     """Представление скомпилированной программы."""
-
     instructions: list[Instruction] = field(default_factory=list)
     data_memory: list[int] = field(default_factory=list)
 
-    labels: dict[str, int] = field(default_factory=dict) 
-    variables: dict[str, int] = field(default_factory=dict) 
+    labels: dict[str, int] = field(default_factory=dict)
+    variables: dict[str, int] = field(default_factory=dict)
 
     isr_table: dict[int, int] = field(default_factory=dict)
 
@@ -36,9 +36,6 @@ class Program:
         self.data_memory.append(initial)
         return addr
 
-    # -----------------------------------------------------------------------
-    # Кодогенерация (Pass 2 уже разрешил все LABEL -> ADDR)
-    # -----------------------------------------------------------------------
     def to_machine_code(self) -> list[str]:
         result = []
         for instr in self.instructions:
@@ -139,12 +136,10 @@ def _push_const(p: Program, val: int, comment: str = "") -> None:
     """Загрузить константу на стек с учетом кэширования R4/R5."""
     upper = (val >> 10) & 0x3FFFFF
     lower = val & 0x3FF
-    
-    # Сдвигаем стек вниз: старый NOS уходит в память, TOS становится NOS
+
     emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="save NOS to mem"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="TOS -> NOS"))
-    
-    # Пишем новое значение прямо в TOS (R4)
+
     emit(p, Instruction(Opcode.LUI, [_reg(R4), _imm(upper)], comment=comment or f"LUI #{upper} (const {val})"))
     emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R4), _imm(lower)], am=1, comment=f"ADD #{lower} (const {val})"))
 
@@ -153,9 +148,10 @@ def _push_label(p: Program, lbl: str, comment: str = "") -> None:
     """Положить адрес метки на стек с учетом кэширования R4/R5."""
     emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="save NOS to mem"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="TOS -> NOS"))
-    
+
     emit(p, Instruction(Opcode.LUI, [_reg(R4), _lbl(f"__lui__{lbl}")], comment=comment or f"LUI addr({lbl})"))
     emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R4), _lbl(f"__low__{lbl}")], am=1, comment=f"ADD low addr({lbl})"))
+
 
 class Translator:
     def __init__(self, tokens: list[Token], program: Program):
@@ -163,10 +159,11 @@ class Translator:
         self.pos = 0
         self.program = program
 
-    def peek(self) -> Token | None:
-        if self.pos < len(self.tokens):
-            return self.tokens[self.pos]
-        return None
+    def peek(self) -> Token:
+        return self.tokens[self.pos]
+
+    def check_len(self) -> bool:
+        return self.pos < len(self.tokens)
 
     def consume(self) -> Token:
         t = self.tokens[self.pos]
@@ -181,17 +178,20 @@ class Translator:
 
     def translate(self) -> None:
         p = self.program
+        emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP over ISR table"))
+
+        lbl_isr_entry = "__hw_isr_entry__"
+        p.labels[lbl_isr_entry] = len(p.instructions)
+        emit(p, Instruction(Opcode.IRET, [], comment="Return from ISR trampoline"))
+
+        p.labels["__start__"] = len(p.instructions)
         emit(p, Instruction(Opcode.CALL, [_lbl("MAIN")], comment="Call entry point"))
         emit(p, Instruction(Opcode.HLT, [], comment="Stop execution"))
 
         main_addr = None
 
-        while self.pos < len(self.tokens):
-            t = self.peek()
-            if t is None:
-                break
-
-            w = t.value.upper()
+        while self.check_len():
+            w = self.peek().value.upper()
             if w not in ("VARIABLE", ":", "MAIN") and main_addr is None:
                 main_addr = len(p.instructions)
 
@@ -206,9 +206,9 @@ class Translator:
         self._link()
 
     def _translate_word(self) -> None:
-        t = self.peek()
-        if t is None:
+        if not self.check_len():
             return
+        t = self.peek()
         w = t.value
         wu = w.upper()
 
@@ -229,7 +229,7 @@ class Translator:
             name = name_tok.value
             self.program.labels[name] = len(self.program.instructions)
 
-            while self.pos < len(self.tokens) and self.peek().value != ";":
+            while self.check_len() and self.peek().value != ";":
                 self._translate_word()
             self.expect(";")
             emit(self.program, Instruction(Opcode.RET, [], comment=f"RET from {name}"))
@@ -324,7 +324,7 @@ class Translator:
         lbl_else = f"__else_{uid}"
         emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_else)], comment="IF: BEQ to else/then"))
 
-        while self.pos < len(self.tokens):
+        while self.check_len():
             nw = self.peek().value.upper()
             if nw in ("ELSE", "THEN"):
                 break
@@ -332,12 +332,13 @@ class Translator:
 
         lbl_end = f"__then_{uid}"
 
-        if self.peek() and self.peek().value.upper() == "ELSE":
+        if self.peek().value.upper() == "ELSE":
             self.consume()
             emit(p, Instruction(Opcode.JMP, [_lbl(lbl_end)], comment="IF: JMP over ELSE"))
             p.labels[lbl_else] = len(p.instructions)
-            while self.pos < len(self.tokens):
+            while self.check_len():
                 nw = self.peek().value.upper()
+
                 if nw == "THEN":
                     break
                 self._translate_word()
@@ -353,13 +354,13 @@ class Translator:
         lbl_begin = f"__begin_{uid}"
         p.labels[lbl_begin] = len(p.instructions)
 
-        while self.pos < len(self.tokens):
+        while self.check_len():
             nw = self.peek().value.upper()
-            if nw in ("WHILE", ):
+            if nw in ("WHILE",):
                 break
             self._translate_word()
 
-        nw = self.peek().value.upper() if self.peek() else ""
+        nw = self.peek().value.upper() if self.check_len() else ""
 
         if nw == "WHILE":
             self.consume()
@@ -371,7 +372,7 @@ class Translator:
             lbl_repeat_end = f"__repeat_{uid}"
             emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_repeat_end)], comment="WHILE: BEQ exit loop if false"))
 
-            while self.pos < len(self.tokens):
+            while self.check_len():
                 nw2 = self.peek().value.upper()
                 if nw2 == "REPEAT":
                     break
@@ -407,7 +408,7 @@ class Translator:
         emit(p, Instruction(Opcode.BEQ, [_lbl(lbl_do_end)], comment="DO: exit if I == LIMIT"))
         emit(p, Instruction(Opcode.BGT, [_lbl(lbl_do_end)], comment="DO: exit if I > LIMIT"))
 
-        while self.pos < len(self.tokens):
+        while self.check_len():
             nw = self.peek().value.upper()
             if nw == "LOOP":
                 break
@@ -436,12 +437,11 @@ class Translator:
             p.variables["__isr_table__"] = base
         base = p.variables["__isr_table__"]
 
-        # xt in NOS(R5), vector_num in TOS(R4)
         emit(p, Instruction(Opcode.ADD, [_reg(R2), _reg(R4), _imm(0)], am=1, comment="SET-ISR: vector_num = TOS"))
         emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R5), _imm(0)], am=1, comment="SET-ISR: xt = NOS"))
         emit(p, Instruction(Opcode.ADD, [_reg(R3), _reg(R2), _imm(base)], am=1, comment="SET-ISR: R3 = base + vector"))
         emit(p, Instruction(Opcode.ST, [_reg(R1), _reg(R3)], am=1, comment="SET-ISR: mem[R3] = xt"))
-        
+
         emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="SET-ISR: pop new TOS"))
         emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="SET-ISR: pop new NOS"))
 
@@ -454,12 +454,11 @@ class Translator:
             p.variables["__exec_cell__"] = p.allocate_variable(0)
 
         cell = p.variables["__exec_cell__"]
-        
-        # xt is in TOS(R4)
+
         emit(p, Instruction(Opcode.ST, [_reg(R4), _addr(cell)], am=0, comment="EXECUTE: store xt(TOS)"))
         emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="EXECUTE: TOS=NOS"))
         emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="EXECUTE: pop new NOS"))
-        
+
         emit(p, Instruction(Opcode.CALL, [_lbl("__execute_dispatch__")], comment="EXECUTE: call dispatch"))
 
     # Pass 2: линковка
@@ -472,7 +471,8 @@ class Translator:
         for instr in p.instructions:
             for arg in instr.args:
                 if arg.arg_type == ArgType.LABEL:
-                    name = arg.value
+                    assert isinstance(arg.value, str), f"Expected str for label, got {type(arg.value)}"
+                    name: str = arg.value
                     if name.startswith("__lui__"):
                         proc = name[len("__lui__") :]
                         real_addr = p.labels.get(proc, p.variables.get(proc, 0))
@@ -487,6 +487,7 @@ class Translator:
         for instr in p.instructions:
             for arg in instr.args:
                 if arg.arg_type == ArgType.LABEL:
+                    assert isinstance(arg.value, str), f"Expected str for label, got {type(arg.value)}"
                     name = arg.value
                     if name in p.variables:
                         arg.arg_type = ArgType.ADDR
@@ -535,26 +536,22 @@ class Translator:
 
 
 def _bi_dup(p: Program) -> None:
-    # DUP ( a -- a a )
     emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="DUP: save NOS to mem"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="DUP: NOS = TOS"))
 
 
 def _bi_drop(p: Program) -> None:
-    # DROP ( a -- )
     emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="DROP: TOS = NOS"))
     emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="DROP: pop new NOS from mem"))
 
 
 def _bi_swap(p: Program) -> None:
-    # SWAP ( a b -- b a )
     emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R4), _imm(0)], am=1, comment="SWAP: tmp = TOS"))
     emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="SWAP: TOS = NOS"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R1), _imm(0)], am=1, comment="SWAP: NOS = tmp"))
 
 
 def _bi_over(p: Program) -> None:
-    # OVER ( a b -- a b a )
     emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="OVER: save old NOS(a) to mem"))
     emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R5), _imm(0)], am=1, comment="OVER: tmp = NOS(b)"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="OVER: NOS = TOS(a)"))
@@ -562,7 +559,6 @@ def _bi_over(p: Program) -> None:
 
 
 def _bi_rot(p: Program) -> None:
-    # ROT ( c b a -- b a c ) -> Target: [SP]=b, NOS=a, TOS=c
     emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="ROT: R1 = c (3rd from mem)"))
     emit(p, Instruction(Opcode.PUSH, [_reg(R5)], comment="ROT: mem[SP] = b (old NOS)"))
     emit(p, Instruction(Opcode.ADD, [_reg(R5), _reg(R4), _imm(0)], am=1, comment="ROT: NOS = a (old TOS)"))
@@ -570,7 +566,6 @@ def _bi_rot(p: Program) -> None:
 
 
 def _bi_nrot(p: Program) -> None:
-    # -ROT ( c b a -- a c b ) -> Target: [SP]=a, NOS=c, TOS=b
     emit(p, Instruction(Opcode.POP, [_reg(R1)], comment="-ROT: R1 = c (3rd from mem)"))
     emit(p, Instruction(Opcode.PUSH, [_reg(R4)], comment="-ROT: mem[SP] = a (old TOS)"))
     emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R5), _imm(0)], am=1, comment="-ROT: TOS = b (old NOS)"))
@@ -578,7 +573,6 @@ def _bi_nrot(p: Program) -> None:
 
 
 def _bi_tuck(p: Program) -> None:
-    # TUCK ( a b -- b a b ) 
     emit(p, Instruction(Opcode.PUSH, [_reg(R4)], comment="TUCK: push TOS(b) under NOS(a)"))
 
 
@@ -607,13 +601,12 @@ def _bi_mod(p: Program) -> None:
     emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="MOD: pop new NOS"))
 
 
-def _bi_cmp_op(opcode_branch: Opcode, name: str):
-    """Фабрика: ( a b -- 1/0 ) через CMP + ветвление."""
+def _bi_cmp_op(opcode_branch: Opcode, name: str) -> Callable[[Program], None]:
     def _impl(p: Program) -> None:
         uid = _uid()
         lbl_true = f"__{name}_t_{uid}"
         lbl_end = f"__{name}_e_{uid}"
-        
+
         emit(p, Instruction(Opcode.CMP, [_reg(R5), _reg(R4)], am=0, comment=f"{name}: CMP NOS, TOS"))
         emit(p, Instruction(opcode_branch, [_lbl(lbl_true)], comment=f"{name}: branch if true"))
         emit(p, Instruction(Opcode.ADD, [_reg(R4), _reg(R0), _imm(0)], am=1, comment=f"{name}: TOS = 0 (False)"))
@@ -626,24 +619,20 @@ def _bi_cmp_op(opcode_branch: Opcode, name: str):
 
 
 def _bi_fetch(p: Program) -> None:
-    # @ ( addr -- val )
-    # Адрес лежит в R4. Результат кладем туда же. NOS не трогаем.
     emit(p, Instruction(Opcode.LD, [_reg(R4), _reg(R4)], am=1, comment="@ LD TOS=[TOS]"))
 
 
 def _bi_store(p: Program) -> None:
-    # ! ( val addr -- )
     emit(p, Instruction(Opcode.ST, [_reg(R5), _reg(R4)], am=1, comment="! ST [TOS]=NOS"))
     emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="! pop new TOS"))
     emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="! pop new NOS"))
 
 
-def _bi_in(p: Program):
-    # IN ( port -- val )
+def _bi_in(p: Program) -> None:
     emit(p, Instruction(Opcode.IN, [_reg(R4), _imm(0)], comment="IN: IN TOS, #0"))
 
-def _bi_out(p: Program):
-    # OUT ( val port -- )
+
+def _bi_out(p: Program) -> None:
     emit(p, Instruction(Opcode.OUT, [_reg(R5), _imm(1)], comment="OUT: OUT NOS, #1"))
     emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="OUT: pop new TOS"))
     emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="OUT: pop new NOS"))
@@ -680,6 +669,6 @@ _BUILTINS = {
 def translate_program(tokens: list[Token], result: Program) -> None:
     """Основная точка входа транслятора."""
     global _label_counter
-    _label_counter = itertools.count()  
+    _label_counter = itertools.count()
     t = Translator(tokens, result)
     t.translate()

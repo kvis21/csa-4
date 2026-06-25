@@ -12,12 +12,12 @@ ROOT = Path(__file__).parent
 PROJECT_ROOT = ROOT.parent
 GOLDEN_ROOT = ROOT / "golden"
 
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from translator.tokenizer import Tokenizer
-from translator.translator import Program, translate_program
-from utils import build_hex_dump, parse_schedule
-from machine import DataPath, ControlUnit
+from src.translator.tokenizer import Tokenizer
+from src.translator.translator import Program, translate_program
+from src.utils import build_hex_dump, parse_schedule
+from src.machine import DataPath, ControlUnit
 
 
 # Кастомные классы-маркеры
@@ -84,7 +84,6 @@ def test_golden_cases(golden_path: Path) -> None:
     trace_io = io.StringIO()
     cu = ControlUnit(dp, trace_io)
 
-    print("=== ЗАПУСК СИМУЛЯЦИИ ===", file=trace_io)
     while not cu.halted and cu.tick_count < limit:
         cu.tick()
 
