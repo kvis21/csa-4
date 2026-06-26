@@ -182,14 +182,14 @@ class Translator:
 
     def translate(self) -> None:
         p = self.program
-        
+
         p.data_memory.append(0)
         p.variables["__isr_table__"] = 0
 
         emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP to start"))
-        
+
         emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP to INT 0"))
-        
+
         p.labels["__start__"] = len(p.instructions)
         emit(p, Instruction(Opcode.CALL, [_lbl("MAIN")], comment="Call entry point"))
         emit(p, Instruction(Opcode.HLT, [], comment="Stop execution"))
@@ -277,7 +277,7 @@ class Translator:
             self.consume()
             emit(self.program, Instruction(Opcode.DI, [], comment="DI"))
             return
-        
+
         if wu == "SET-ISR":
             self.consume()
             self._emit_set_isr()
@@ -439,6 +439,7 @@ class Translator:
         p = self.program
 
         lbl_value = p.instructions[-1].args[2].value
+        assert isinstance(lbl_value, str), f"Expected str for label, got {type(lbl_value)}"
         handler_name = lbl_value.replace("__low__", "")
         p.instructions = p.instructions[:-4]
 

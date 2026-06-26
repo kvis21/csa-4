@@ -98,10 +98,10 @@ class ControlUnit:
     def _microcode_fsm(self) -> Generator[str]:
         while True:
 
-            # 1. INTERRUPT LOGIC 
+            # 1. INTERRUPT LOGIC
             if self.dp.sr_ie and len(self.dp.in_buffer) > 0:
                 self.dp.sr_int = 1
-                
+
                 yield "INT_PC"
                 self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
@@ -115,7 +115,7 @@ class ControlUnit:
                 yield "INT_ST"
                 self.dp.sr_ie = 0
                 vector_addr = 1
-                
+
                 self.dp.pc = vector_addr
                 continue
 
@@ -144,7 +144,7 @@ class ControlUnit:
             elif opcode in (Opcode.IN, Opcode.OUT) or opcode in (Opcode.PUSH, Opcode.POP):
                 rd = (self.dp.ir >> 22) & 0x7
             yield f"{opcode.name}_AF"
-            
+
             # 4. EXECUTE PHASE (EF)
             if opcode == Opcode.LUI:
                 imm22 = self.dp.ir & 0x3FFFFF
@@ -265,7 +265,7 @@ class ControlUnit:
                 yield "IRET_PC"
                 self.dp.pc = self.dp.dmem[self.dp.ar]
                 self.dp.regs[7] += 1
-                
+
                 self.dp.sr_int = 0
 
     def _log_state(self, phase: str) -> None:

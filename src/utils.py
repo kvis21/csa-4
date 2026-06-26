@@ -1,5 +1,6 @@
 from src.translator.translator import Program
-import struct, sys
+import struct
+import sys
 
 type ScheduleType = list[tuple[int, int]]
 
@@ -69,7 +70,7 @@ def run_simulation(imem_file: str,
                    schedule: ScheduleType,
                    trace_file: str = "") -> list[int]:
     from src.machine import DataPath, ControlUnit
-    
+
     imem = load_binary(imem_file)
     dmem = load_binary(dmem_file)
 

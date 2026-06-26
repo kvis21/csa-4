@@ -57,12 +57,12 @@ def cmd_run(args: Namespace) -> None:
         except FileNotFoundError:
             print(f"Ошибка: Файл {args.input} не найден.")
     out = run_simulation(args.imem_name, args.dmem_name, schedule, trace_file=args.trace)
-    
+
     stdout_sym = ""
     for val in out:
         stdout_sym += chr(val % 0x10FFFF)
-    print(stdout_sym) 
-    
+    print(stdout_sym)
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Транслятор и эмулятор Гарвардского RISC-процессора.")
     subparsers = parser.add_subparsers(dest="command", required=True)

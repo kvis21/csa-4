@@ -5,9 +5,9 @@ from dataclasses import dataclass
 
 
 class TokenType(Enum):
-    WORD = auto() 
-    NUMBER = auto() 
-    STRING = auto()  
+    WORD = auto()
+    NUMBER = auto()
+    STRING = auto()
 
 
 @dataclass
