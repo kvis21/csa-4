@@ -43,9 +43,6 @@ class Program:
         return result
 
     def _encode(self, instr: Instruction) -> str:
-        if instr.comment == "INTERRUPT_VECTOR":
-            addr = int(instr.args[0].value)
-            return f"{addr:032b}"
         opc = int(instr.opcode.value) & 0x7F
 
         def val(arg: Arg) -> int:
@@ -518,12 +515,7 @@ class Translator:
             upper = (proc_addr >> 10) & 0x3FFFFF
             lower = proc_addr & 0x3FF
             emit(p, Instruction(Opcode.LUI, [_reg(R3), _imm(upper)], comment=f"DISP: load addr of {proc_name} upper"))
-            emit(
-                p,
-                Instruction(
-                    Opcode.ADD, [_reg(R3), _reg(R3), _imm(lower)], am=1, comment=f"DISP: load addr of {proc_name} lower"
-                ),
-            )
+            emit(p, Instruction(Opcode.ADD, [_reg(R3), _reg(R3), _imm(lower)], am=1, comment=f"DISP: load addr of {proc_name} lower"))
             emit(p, Instruction(Opcode.CMP, [_reg(R4), _reg(R3)], am=0, comment=f"DISP: CMP xt == {proc_name}?"))
             emit(p, Instruction(Opcode.BNE, [_lbl(lbl_no_match)], comment=f"DISP: BNE skip {proc_name}"))
             emit(p, Instruction(Opcode.CALL, [_addr(proc_addr)], comment=f"DISP: CALL {proc_name}"))
