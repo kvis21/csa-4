@@ -1,4 +1,5 @@
 from src.translator.translator import Program
+import struct, sys
 
 type ScheduleType = list[tuple[int, int]]
 
@@ -53,15 +54,36 @@ def build_hex_dump(program: Program, machine_code: list[str]) -> str:
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    print(
-        parse_schedule("""    1 t
-  2 e
-  3 s
-  4 t
-  5 '9'S
-  6 0x31
-  7 '-1'
-  10 10
-  12 '0'""")
-    )
+def load_binary(filename: str) -> list[int]:
+    memory: list[int] = []
+    with open(filename, "rb") as f:
+        while chunk := f.read(4):
+            if len(chunk) == 4:
+                val = struct.unpack(">I", chunk)[0]
+                memory.append(val)
+    return memory
+
+
+def run_simulation(imem_file: str,
+                   dmem_file: str,
+                   schedule: ScheduleType,
+                   trace_file: str = "") -> list[int]:
+    from src.machine import DataPath, ControlUnit
+    
+    imem = load_binary(imem_file)
+    dmem = load_binary(dmem_file)
+
+    imem += [0] * (1024 - len(imem))
+    dmem += [0] * (2048 - len(dmem))
+
+    dp = DataPath(dmem_size=2048, imem_size=1024, input_schedule=schedule)
+
+    dp.imem = imem
+    dp.dmem = dmem
+
+    with open(trace_file, "w", encoding="utf-8") if trace_file else sys.stdout as log_output :
+        cu = ControlUnit(dp, log_output)
+        limit = 100000
+        while not cu.halted and cu.tick_count < limit:
+            cu.tick()
+    return dp.out_buffer

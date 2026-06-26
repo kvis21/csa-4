@@ -3,28 +3,26 @@ from argparse import Namespace
 import struct
 import sys
 
-from src.machine import run_simulation
+from src.utils import run_simulation
 from src.translator.tokenizer import Tokenizer
 from src.translator.translator import Program, translate_program
 from src.utils import build_hex_dump, parse_schedule
 
 
 def cmd_translate(args: Namespace) -> None:
-    """Логика трансляции в раздельные файлы (Harvard Architecture)."""
     source_name = args.source_name
     binary_name = args.imem_name
     memory_name = args.dmem_name
     debug_name = args.debug_name
 
-    print(f"[*] Чтение исходного кода из {source_name}...")
+    print(f"Чтение исходного кода из {source_name}")
     try:
         with open(source_name, encoding="utf-8") as f:
             source_code = f.read()
     except FileNotFoundError:
-        print(f"[!] Ошибка: Файл {source_name} не найден.")
+        print(f"Ошибка: Файл {source_name} не найден.")
         sys.exit(1)
 
-    print("[*] Токенизация и трансляция...")
     tokenizer = Tokenizer()
     tokens = tokenizer.tokenize(source_code)
 
@@ -32,38 +30,39 @@ def cmd_translate(args: Namespace) -> None:
     translate_program(tokens, program)
     machine_code = program.to_machine_code()
 
-    print(f"[*] Генерация бинарника инструкций: {binary_name}...")
+    print(f"Генерация бинарника инструкций: {binary_name}")
     with open(binary_name, "wb") as f:
         for bin_str in machine_code:
             f.write(struct.pack(">I", int(bin_str, 2)))
 
-    print(f"[*] Генерация бинарника данных: {memory_name}...")
+    print(f"Генерация бинарника данных: {memory_name}")
     with open(memory_name, "wb") as f:
         for data_val in program.data_memory:
             f.write(struct.pack(">I", data_val & 0xFFFFFFFF))
 
     if debug_name:
-        print(f"[*] Генерация hex-дампа (debug): {debug_name}...")
+        print(f"Генерация hex-дампа (debug): {debug_name}")
         with open(debug_name, "w", encoding="utf-8") as f:
             f.write(build_hex_dump(program, machine_code))
-
-    print("[+] Трансляция успешно завершена!")
     print(f"    Инструкций (IMEM): {len(machine_code)} слов")
     print(f"    Данных (DMEM):     {len(program.data_memory)} слов")
-
+    print(build_hex_dump(program, machine_code))
 
 def cmd_run(args: Namespace) -> None:
-    """Логика запуска симулятора."""
     schedule = []
     if args.input:
         try:
             with open(args.input, encoding="utf-8") as f:
                 schedule = parse_schedule(f.read())
         except FileNotFoundError:
-            print(f"[!] Ошибка: Файл {args.input} не найден.")
-    run_simulation(args.imem_name, args.dmem_name, schedule, trace_file=args.trace)
-
-
+            print(f"Ошибка: Файл {args.input} не найден.")
+    out = run_simulation(args.imem_name, args.dmem_name, schedule, trace_file=args.trace)
+    
+    stdout_sym = ""
+    for val in out:
+        stdout_sym += chr(val % 0x10FFFF)
+    print(stdout_sym) 
+    
 def main() -> None:
     parser = argparse.ArgumentParser(description="Транслятор и эмулятор Гарвардского RISC-процессора.")
     subparsers = parser.add_subparsers(dest="command", required=True)

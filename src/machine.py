@@ -1,5 +1,4 @@
 import sys
-import struct
 from src.isa import Opcode
 from src.utils import ScheduleType
 from typing import TextIO
@@ -126,19 +125,12 @@ class ControlUnit:
                 self.halted = True
                 yield "ERR_HALT"
                 break
-
+            opcode_val = (self.dp.ir >> 25) & 0x7F
+            opcode = Opcode(opcode_val)
             self.dp.pc += 1
-            yield f"IF"
+            yield f"{opcode.name}_IF"
 
             # 3. ADDRESS FETCH (AF)
-            opcode_val = (self.dp.ir >> 25) & 0x7F
-            try:
-                opcode = Opcode(opcode_val)
-            except ValueError:
-                self.halted = True
-                yield "ERR_HALT"
-                break
-
             rd, rs1, am = 0, 0, 0
             if opcode in (Opcode.LD, Opcode.ST):
                 rd = (self.dp.ir >> 22) & 0x7
@@ -286,35 +278,3 @@ class ControlUnit:
         )
         print(log_str, file=self.output)
 
-
-def load_binary(filename: str) -> list[int]:
-    memory: list[int] = []
-    with open(filename, "rb") as f:
-        while chunk := f.read(4):
-            if len(chunk) == 4:
-                val = struct.unpack(">I", chunk)[0]
-                memory.append(val)
-    return memory
-
-
-def run_simulation(imem_file: str,
-                   dmem_file: str,
-                   schedule: ScheduleType,
-                   trace_file: str = "") -> None:
-    """Точка входа для запуска эмулятора."""
-    imem = load_binary(imem_file)
-    dmem = load_binary(dmem_file)
-
-    imem += [0] * (1024 - len(imem))
-    dmem += [0] * (2048 - len(dmem))
-
-    dp = DataPath(dmem_size=2048, imem_size=1024, input_schedule=schedule)
-
-    dp.imem = imem
-    dp.dmem = dmem
-
-    with open(trace_file, "w", encoding="utf-8") if trace_file else sys.stdout as log_output :
-        cu = ControlUnit(dp, log_output)
-        limit = 100000
-        while not cu.halted and cu.tick_count < limit:
-            cu.tick()
