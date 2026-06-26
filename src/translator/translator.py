@@ -38,11 +38,14 @@ class Program:
 
     def to_machine_code(self) -> list[str]:
         result = []
-        for instr in self.instructions:
+        for _, instr in enumerate(self.instructions):
             result.append(self._encode(instr))
         return result
 
     def _encode(self, instr: Instruction) -> str:
+        if instr.comment == "INTERRUPT_VECTOR":
+            addr = int(instr.args[0].value)
+            return f"{addr:032b}"
         opc = int(instr.opcode.value) & 0x7F
 
         def val(arg: Arg) -> int:
@@ -96,6 +99,7 @@ class Program:
         elif instr.opcode in (Opcode.RET, Opcode.EI, Opcode.DI, Opcode.IRET, Opcode.HLT):
             word = opc << 25
 
+            return f"{word:032b}"
         return f"{word:032b}"
 
 
@@ -178,12 +182,14 @@ class Translator:
 
     def translate(self) -> None:
         p = self.program
-        emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP over ISR table"))
+        
+        p.data_memory.append(0)
+        p.variables["__isr_table__"] = 0
 
-        lbl_isr_entry = "__hw_isr_entry__"
-        p.labels[lbl_isr_entry] = len(p.instructions)
-        emit(p, Instruction(Opcode.IRET, [], comment="Return from ISR trampoline"))
-
+        emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP to start"))
+        
+        emit(p, Instruction(Opcode.JMP, [_lbl("__start__")], comment="JMP to INT 0"))
+        
         p.labels["__start__"] = len(p.instructions)
         emit(p, Instruction(Opcode.CALL, [_lbl("MAIN")], comment="Call entry point"))
         emit(p, Instruction(Opcode.HLT, [], comment="Stop execution"))
@@ -271,15 +277,16 @@ class Translator:
             self.consume()
             emit(self.program, Instruction(Opcode.DI, [], comment="DI"))
             return
-
-        if wu == "IRET":
-            self.consume()
-            emit(self.program, Instruction(Opcode.IRET, [], comment="IRET"))
-            return
-
+        
         if wu == "SET-ISR":
             self.consume()
             self._emit_set_isr()
+            return
+
+        if wu == "IRET":
+            self.consume()
+            p = self.program
+            emit(p, Instruction(Opcode.IRET, [], comment="IRET"))
             return
 
         if w == "'":
@@ -337,9 +344,9 @@ class Translator:
             emit(p, Instruction(Opcode.JMP, [_lbl(lbl_end)], comment="IF: JMP over ELSE"))
             p.labels[lbl_else] = len(p.instructions)
             while self.check_len():
-                nw = self.peek().value.upper()
+                nw2 = self.peek().value.upper()
 
-                if nw == "THEN":
+                if nw2 == "THEN":
                     break
                 self._translate_word()
         else:
@@ -430,20 +437,12 @@ class Translator:
 
     def _emit_set_isr(self) -> None:
         p = self.program
-        if "__isr_table__" not in p.variables:
-            base = len(p.data_memory)
-            for _ in range(8):
-                p.data_memory.append(0)
-            p.variables["__isr_table__"] = base
-        base = p.variables["__isr_table__"]
 
-        emit(p, Instruction(Opcode.ADD, [_reg(R2), _reg(R4), _imm(0)], am=1, comment="SET-ISR: vector_num = TOS"))
-        emit(p, Instruction(Opcode.ADD, [_reg(R1), _reg(R5), _imm(0)], am=1, comment="SET-ISR: xt = NOS"))
-        emit(p, Instruction(Opcode.ADD, [_reg(R3), _reg(R2), _imm(base)], am=1, comment="SET-ISR: R3 = base + vector"))
-        emit(p, Instruction(Opcode.ST, [_reg(R1), _reg(R3)], am=1, comment="SET-ISR: mem[R3] = xt"))
+        lbl_value = p.instructions[-1].args[2].value
+        handler_name = lbl_value.replace("__low__", "")
+        p.instructions = p.instructions[:-4]
 
-        emit(p, Instruction(Opcode.POP, [_reg(R4)], comment="SET-ISR: pop new TOS"))
-        emit(p, Instruction(Opcode.POP, [_reg(R5)], comment="SET-ISR: pop new NOS"))
+        p.instructions[1] = Instruction(Opcode.JMP, [_lbl(handler_name)], comment="SET-ISR: JMP to INT 0")
 
     def _emit_execute(self) -> None:
         p = self.program
@@ -461,7 +460,6 @@ class Translator:
 
         emit(p, Instruction(Opcode.CALL, [_lbl("__execute_dispatch__")], comment="EXECUTE: call dispatch"))
 
-    # Pass 2: линковка
     def _link(self) -> None:
         p = self.program
 
@@ -531,7 +529,7 @@ class Translator:
             emit(p, Instruction(Opcode.RET, [], comment="DISP: RET after dispatch"))
             p.labels[lbl_no_match] = len(p.instructions)
 
-            emit(p, Instruction(Opcode.RET, [], comment="EXEC_DISP: no match, RET"))
+        emit(p, Instruction(Opcode.RET, [], comment="EXEC_DISP: no match, RET"))
         p.labels[lbl_disp_end] = len(p.instructions)
 
 

@@ -30,6 +30,7 @@ class DataPath:
         self.sr_n = 0
         self.sr_z = 0
         self.sr_ie = 0
+        self.sr_int = 0
 
         self.input_schedule = input_schedule
         self.in_buffer: list[int] = []
@@ -96,36 +97,38 @@ class ControlUnit:
             self.halted = True
 
     def _microcode_fsm(self) -> Generator[str]:
-        """
-        Генератор, моделирующий логику Step Counter и Control HW Matrix.
-        """
         while True:
-            # 1. INTERRUPT LOGIC
+
+            # 1. INTERRUPT LOGIC 
             if self.dp.sr_ie and len(self.dp.in_buffer) > 0:
-                yield "INT1"
+                self.dp.sr_int = 1
+                
+                yield "INT_PC"
                 self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
                 self.dp.dmem[self.dp.ar] = self.dp.pc
 
-                yield "INT2"
+                yield "INT_SR"
                 self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
                 self.dp.dmem[self.dp.ar] = self.dp.get_sr()
 
-                yield "INT3"
+                yield "INT_ST"
                 self.dp.sr_ie = 0
-                self.dp.pc = self.dp.imem[1]
+                vector_addr = 1
+                
+                self.dp.pc = vector_addr
                 continue
 
             # 2. INSTRUCTION FETCH (IF)
             self.dp.ir = self.dp.imem[self.dp.pc]
             if self.dp.ir == 0:
                 self.halted = True
-                yield "HALT"
+                yield "ERR_HALT"
                 break
 
             self.dp.pc += 1
-            yield "IF"
+            yield f"IF"
 
             # 3. ADDRESS FETCH (AF)
             opcode_val = (self.dp.ir >> 25) & 0x7F
@@ -133,7 +136,7 @@ class ControlUnit:
                 opcode = Opcode(opcode_val)
             except ValueError:
                 self.halted = True
-                yield "ERR"
+                yield "ERR_HALT"
                 break
 
             rd, rs1, am = 0, 0, 0
@@ -148,13 +151,13 @@ class ControlUnit:
                 am = (self.dp.ir >> 18) & 0x1
             elif opcode in (Opcode.IN, Opcode.OUT) or opcode in (Opcode.PUSH, Opcode.POP):
                 rd = (self.dp.ir >> 22) & 0x7
-
-            yield "AF"
-            # 4. EXECUTE PHASE (EF) - Длительность зависит от инструкции
+            yield f"{opcode.name}_AF"
+            
+            # 4. EXECUTE PHASE (EF)
             if opcode == Opcode.LUI:
                 imm22 = self.dp.ir & 0x3FFFFF
                 self.dp.regs[rd] = sign_extend(imm22, 22) << 10
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode in (Opcode.LD, Opcode.ST):
                 if am == 0:
@@ -165,13 +168,13 @@ class ControlUnit:
 
                 if opcode == Opcode.LD:
                     self.dp.data_bus = self.dp.dmem[self.dp.ar]
-                    yield "EX1"
+                    yield f"{opcode.name}_1"
                     self.dp.regs[rd] = self.dp.data_bus
-                    yield "EX2"
+                    yield f"{opcode.name}_2"
                 else:
                     self.dp.dmem[self.dp.ar] = self.dp.regs[rd]
-                    yield "EX1"
-                    yield "EX2"
+                    yield f"{opcode.name}_1"
+                    yield f"{opcode.name}_2"
 
             elif opcode in (Opcode.ADD, Opcode.SUB, Opcode.MUL, Opcode.DIV, Opcode.MOD, Opcode.CMP):
                 rs1_val = self.dp.regs[rs1]
@@ -184,58 +187,52 @@ class ControlUnit:
                 res = self.dp.alu_execute(opcode, rs1_val, operand2)
                 if opcode != Opcode.CMP:
                     self.dp.regs[rd] = res
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode in (Opcode.JMP, Opcode.BEQ, Opcode.BNE, Opcode.BGT, Opcode.BLT):
                 addr25 = self.dp.ir & 0x1FFFFFF
                 take_branch = False
                 if (
                     opcode == Opcode.JMP
-                    or opcode == Opcode.BEQ
-                    and self.dp.sr_z == 1
-                    or opcode == Opcode.BNE
-                    and self.dp.sr_z == 0
-                    or opcode == Opcode.BGT
-                    and self.dp.sr_z == 0
-                    and self.dp.sr_n == 0
-                    or opcode == Opcode.BLT
-                    and self.dp.sr_n == 1
+                    or opcode == Opcode.BEQ and self.dp.sr_z == 1
+                    or opcode == Opcode.BNE and self.dp.sr_z == 0
+                    or opcode == Opcode.BGT and self.dp.sr_z == 0 and self.dp.sr_n == 0
+                    or opcode == Opcode.BLT and self.dp.sr_n == 1
                 ):
                     take_branch = True
-
                 if take_branch:
                     self.dp.pc = addr25
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode == Opcode.CALL:
                 addr25 = self.dp.ir & 0x1FFFFFF
                 self.dp.regs[7] -= 1
                 self.dp.ar = self.dp.regs[7]
-                yield "EX1"
+                yield f"{opcode.name}_1"
                 self.dp.dmem[self.dp.ar] = self.dp.pc
                 self.dp.pc = addr25
-                yield "EX2"
+                yield f"{opcode.name}_2"
 
             elif opcode == Opcode.RET:
                 self.dp.ar = self.dp.regs[7]
-                yield "EX1"
+                yield f"{opcode.name}_1"
                 self.dp.pc = self.dp.dmem[self.dp.ar]
                 self.dp.regs[7] += 1
-                yield "EX2"
+                yield "RET_2"
 
             elif opcode == Opcode.PUSH:
                 self.dp.regs[6] -= 1
                 self.dp.ar = self.dp.regs[6]
-                yield "EX1"
+                yield f"{opcode.name}_1"
                 self.dp.dmem[self.dp.ar] = self.dp.regs[rd]
-                yield "EX2"
+                yield f"{opcode.name}_2"
 
             elif opcode == Opcode.POP:
                 self.dp.ar = self.dp.regs[6]
-                yield "EX1"
+                yield f"{opcode.name}_1"
                 self.dp.regs[rd] = self.dp.dmem[self.dp.ar]
                 self.dp.regs[6] += 1
-                yield "EX2"
+                yield f"{opcode.name}_2"
 
             elif opcode == Opcode.IN:
                 port = self.dp.ir & 0x3FFFFF
@@ -244,22 +241,22 @@ class ControlUnit:
                         self.dp.regs[rd] = self.dp.in_buffer.pop(0)
                     else:
                         self.dp.regs[rd] = 0
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode == Opcode.OUT:
                 port = self.dp.ir & 0x3FFFFF
                 if port == 1:
                     val = self.dp.regs[rd]
                     self.dp.out_buffer.append(val)
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode == Opcode.EI:
                 self.dp.sr_ie = 1
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode == Opcode.DI:
                 self.dp.sr_ie = 0
-                yield "EX1"
+                yield f"{opcode.name}_1"
 
             elif opcode == Opcode.HLT:
                 self.halted = True
@@ -268,22 +265,22 @@ class ControlUnit:
 
             elif opcode == Opcode.IRET:
                 self.dp.ar = self.dp.regs[7]
-                yield "EX1"
+                yield "IRET_SR"
                 self.dp.set_sr(self.dp.dmem[self.dp.ar])
                 self.dp.regs[7] += 1
-                yield "EX2"
 
                 self.dp.ar = self.dp.regs[7]
-                yield "EX3"
+                yield "IRET_PC"
                 self.dp.pc = self.dp.dmem[self.dp.ar]
                 self.dp.regs[7] += 1
-                yield "EX4"
+                
+                self.dp.sr_int = 0
 
     def _log_state(self, phase: str) -> None:
-        flags = f"N:{self.dp.sr_n} Z:{self.dp.sr_z} IE:{self.dp.sr_ie}"
+        flags = f"N:{self.dp.sr_n} Z:{self.dp.sr_z} IE:{self.dp.sr_ie} INT: {self.dp.sr_int}"
         r_str = "  ".join([f"R{i}:{self.dp.regs[i]:04X}" for i in range(8)])
         log_str = (
-            f"Tick: {self.tick_count:04} | {phase:^4} |  "
+            f"Tick: {self.tick_count:04} | {phase:^8} |  "
             f"PC: {self.dp.pc:04X} | IR: {self.dp.ir:08X} |  "
             f"AR: {self.dp.ar:04X} | {flags} | {r_str}"
         )
